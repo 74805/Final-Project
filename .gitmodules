@@ -1,0 +1,3 @@
+[submodule "LibTorch-ResNet-CIFAR"]
+	path = LibTorch-ResNet-CIFAR
+	url = ./LibTorch-ResNet-CIFAR/
