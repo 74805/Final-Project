@@ -7,12 +7,8 @@
 #include <math.h>
 #include <string.h>
 #include <fcntl.h>
-#if defined _WIN32
-#include "win.h"
-#else
 #include <unistd.h>
-#include <sys/mman.h>
-#endif
+
 // ----------------------------------------------------------------------------
 // Mamba model
 
@@ -248,10 +244,15 @@ void load_model_file(char *model_path, Config *config, MambaWeights *weights,
         fprintf(stderr, "open failed!\n");
         exit(EXIT_FAILURE);
     }
-    *data = mmap(NULL, *file_size, PROT_READ, MAP_PRIVATE, *fd, 0);
-    if (*data == MAP_FAILED)
+    *data = (float *)malloc(*file_size);
+    if (*data == NULL)
     {
-        fprintf(stderr, "mmap failed!\n");
+        fprintf(stderr, "malloc failed!\n");
+        exit(EXIT_FAILURE);
+    }
+    if (read(*fd, *data, *file_size) != *file_size)
+    {
+        fprintf(stderr, "read failed!\n");
         exit(EXIT_FAILURE);
     }
     float *weights_ptr = *data + (256 / 4);
@@ -269,10 +270,7 @@ void load_model(Mamba *m, char *model_path)
 void free_model(Mamba *m)
 {
     // close the memory mapping
-    if (m->data != MAP_FAILED)
-    {
-        munmap(m->data, m->file_size);
-    }
+    free(m->data);
     if (m->fd != -1)
     {
         close(m->fd);
@@ -384,6 +382,9 @@ void matmul(float *xout, float *x, float *w, int d, int n)
 {
     // w[d,n] @ x[n] -> xout[d]
     // #pragma omp parallel for
+    // printf("x: %d, %d\n", d, n);
+    // print matrix
+
     for (int i = 0; i < d; i++)
     {
         float val = 0.0f;
@@ -428,6 +429,7 @@ void broadcast_multiply(float *out, float *x, float *y, int d, int n)
 void elementwise_multiply(float *result, float *matrix1, float *matrix2, int total_elements)
 {
     // #pragma omp parallel for
+    // 6144
     for (int i = 0; i < total_elements; i++)
     {
         result[i] = matrix1[i] * matrix2[i];
@@ -437,6 +439,7 @@ void elementwise_multiply(float *result, float *matrix1, float *matrix2, int tot
 void elementwise_add(float *result, float *matrix1, float *matrix2, int total_elements)
 {
     // #pragma omp parallel for
+    // 1536
     for (int i = 0; i < total_elements; i++)
     {
         result[i] = matrix1[i] + matrix2[i];
@@ -446,6 +449,7 @@ void elementwise_add(float *result, float *matrix1, float *matrix2, int total_el
 void elementwise_multiply_and_add(float *result, float *matrix1, float *matrix2, float *matrix3, int total_elements)
 {
     // #pragma omp parallel for
+    // 1536 or 24576
     for (int i = 0; i < total_elements; i++)
     {
         result[i] = matrix1[i] * matrix2[i] + matrix3[i];
@@ -1087,13 +1091,13 @@ int sample(Sampler *sampler, float *logits)
 // ----------------------------------------------------------------------------
 // utilities: time
 
-long time_in_ms()
-{
-    // return time in milliseconds, for benchmarking the model speed
-    struct timespec time;
-    clock_gettime(CLOCK_REALTIME, &time);
-    return time.tv_sec * 1000 + time.tv_nsec / 1000000;
-}
+// long time_in_ms()
+// {
+//     // return time in milliseconds, for benchmarking the model speed
+//     struct timespec time;
+//     clock_gettime(CLOCK_REALTIME, &time);
+//     return time.tv_sec * 1000 + time.tv_nsec / 1000000;
+// }
 
 // ----------------------------------------------------------------------------
 // generation loop
@@ -1161,19 +1165,19 @@ void generate(Mamba *mamba, Tokenizer *tokenizer, Sampler *sampler, char *prompt
         token = next;
 
         // init the timer here because the first iteration can be slower
-        if (start == 0)
-        {
-            start = time_in_ms();
-        }
+        // if (start == 0)
+        // {
+        //     start = time_in_ms();
+        // }
     }
     printf("\n");
 
     // report achieved tok/s (pos-1 because the timer starts after first iteration)
-    if (pos > 1)
-    {
-        long end = time_in_ms();
-        fprintf(stderr, "achieved tok/s: %f\n", (pos - 1) / (double)(end - start) * 1000);
-    }
+    // if (pos > 1)
+    // {
+    //     long end = time_in_ms();
+    //     fprintf(stderr, "achieved tok/s: %f\n", (pos - 1) / (double)(end - start) * 1000);
+    // }
 
     free(prompt_tokens);
 }
@@ -1332,75 +1336,80 @@ int main(int argc, char *argv[])
     char *model_path = NULL; // e.g. out/model.bin
     char *tokenizer_path = "tokenizer.bin";
     float temperature = 1.0f;        // 0.0 = greedy deterministic. 1.0 = original. don't set higher
-    float topp = 0.9f;               // top-p in nucleus sampling. 1.0 = off. 0.9 works well, but slower
+    float topp = 0.1f;               // top-p in nucleus sampling. 1.0 = off. 0.9 works well, but slower
     int steps = 256;                 // number of steps to run for
     char *prompt = NULL;             // prompt string
-    unsigned long long rng_seed = 0; // seed rng with time by default
+    unsigned long long rng_seed = 1; // seed rng with time by default
     char *mode = "generate";         // generate|chat
     char *system_prompt = NULL;      // the (optional) system prompt to use in chat mode
 
+    model_path = "model.bin";
+    steps = 50;
+    prompt = "Customer Support should";
+    temperature = 0.0;
+
     // poor man's C argparse so we can override the defaults above from the command line
-    if (argc >= 2)
-    {
-        model_path = argv[1];
-    }
-    else
-    {
-        error_usage();
-    }
-    for (int i = 2; i < argc; i += 2)
-    {
-        // do some basic validation
-        if (i + 1 >= argc)
-        {
-            error_usage();
-        } // must have arg after flag
-        if (argv[i][0] != '-')
-        {
-            error_usage();
-        } // must start with dash
-        if (strlen(argv[i]) != 2)
-        {
-            error_usage();
-        } // must be -x (one dash, one letter)
-        // read in the args
-        if (argv[i][1] == 't')
-        {
-            temperature = atof(argv[i + 1]);
-        }
-        else if (argv[i][1] == 'p')
-        {
-            topp = atof(argv[i + 1]);
-        }
-        else if (argv[i][1] == 's')
-        {
-            rng_seed = atoi(argv[i + 1]);
-        }
-        else if (argv[i][1] == 'n')
-        {
-            steps = atoi(argv[i + 1]);
-        }
-        else if (argv[i][1] == 'i')
-        {
-            prompt = argv[i + 1];
-        }
-        else if (argv[i][1] == 'z')
-        {
-            tokenizer_path = argv[i + 1];
-        }
-        else if (argv[i][1] == 'm')
-        {
-            mode = argv[i + 1];
-        }
-        else if (argv[i][1] == 'y')
-        {
-            system_prompt = argv[i + 1];
-        }
-        else
-        {
-            error_usage();
-        }
-    }
+    // if (argc >= 2)
+    // {
+    //     model_path = argv[1];
+    // }
+    // else
+    // {
+    //     error_usage();
+    // }
+    // for (int i = 2; i < argc; i += 2)
+    // {
+    //     // do some basic validation
+    //     if (i + 1 >= argc)
+    //     {
+    //         error_usage();
+    //     } // must have arg after flag
+    //     if (argv[i][0] != '-')
+    //     {
+    //         error_usage();
+    //     } // must start with dash
+    //     if (strlen(argv[i]) != 2)
+    //     {
+    //         error_usage();
+    //     } // must be -x (one dash, one letter)
+    //     // read in the args
+    //     if (argv[i][1] == 't')
+    //     {
+    //         temperature = atof(argv[i + 1]);
+    //     }
+    //     else if (argv[i][1] == 'p')
+    //     {
+    //         topp = atof(argv[i + 1]);
+    //     }
+    //     else if (argv[i][1] == 's')
+    //     {
+    //         rng_seed = atoi(argv[i + 1]);
+    //     }
+    //     else if (argv[i][1] == 'n')
+    //     {
+    //         steps = atoi(argv[i + 1]);
+    //     }
+    //     else if (argv[i][1] == 'i')
+    //     {
+    //         prompt = argv[i + 1];
+    //     }
+    //     else if (argv[i][1] == 'z')
+    //     {
+    //         tokenizer_path = argv[i + 1];
+    //     }
+    //     else if (argv[i][1] == 'm')
+    //     {
+    //         mode = argv[i + 1];
+    //     }
+    //     else if (argv[i][1] == 'y')
+    //     {
+    //         system_prompt = argv[i + 1];
+    //     }
+    //     else
+    //     {
+    //         error_usage();
+    //     }
+    // }
 
     // parameter validation/overrides
     if (rng_seed <= 0)
