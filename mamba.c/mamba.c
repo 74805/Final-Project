@@ -8,94 +8,91 @@
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <stdint.h>
 
 // Function prototype for calculate_mse
 float calculate_mse(const char *filename, int *tokens, int num_tokens, float *embedding_table, int embedding_dim);
 
 // ----------------------------------------------------------------------------
-// Fixed-point arithmetic
+// Fixed point arithmetic
+#define FRAC_BITS 16
+#define FIXED_ONE (1 << FRAC_BITS)
+#define FIXED_HALF (1 << (FRAC_BITS - 1))
+#define FIXED_EPSILON (1)
 
-typedef int32_t fixed_t;
+typedef __int32_t fixed_t;
 
-#define FIXED_FRACTIONAL_BITS 23
-#define FIXED_ONE (1 << FIXED_FRACTIONAL_BITS)
-#define FLOAT_TO_FIXED(x) ((fixed_t)((x) * FIXED_ONE))
-#define FIXED_TO_FLOAT(x) (((float)(x)) / FIXED_ONE)
-#define FIXED_MUL(x, y) (((x) * (y)) >> FIXED_FRACTIONAL_BITS)
-#define FIXED_DIV(x, y) ((y == 0) ? 0 : ((fixed_t)(((int64_t)(x) << FIXED_FRACTIONAL_BITS) / (y))))
-#define FIXED_ADD_INT(x, n) (FLOAT_TO_FIXED(FIXED_TO_FLOAT((x)) + (n)))
-
-#define FIXED_EXP_LIMIT 10
-#define FIXED_LOG_PRECISION FLOAT_TO_FIXED(1)
-
-// Exponential function using Taylor series approximation
-// fixed_t exp_fixed(fixed_t x)
-// {
-//     if (x < 0)
-//     {
-//         // e^-x = 1 / e^x
-//         return FIXED_DIV(FIXED_ONE, exp_fixed(-x));
-//     }
-//     return FLOAT_TO_FIXED(expf(FIXED_TO_FLOAT(x)));
-//     // if (x < 0)
-//     // {
-//     //     // e^-x = 1 / e^x
-//     //     return FIXED_DIV(FIXED_ONE, exp_fixed(-x));
-//     // }
-//     // if (x > FLOAT_TO_FIXED(2))
-//     // {
-//     //     return FIXED_MUL(exp_fixed(FIXED_DIV(x, FLOAT_TO_FIXED(2))), exp_fixed(FIXED_DIV(x, FLOAT_TO_FIXED(2))));
-//     // }
-
-//     // fixed_t result = FIXED_ONE; // e^0 = 1
-//     // fixed_t term = FIXED_ONE;   // Initial term x^0 / 0! = 1
-//     // fixed_t i = FIXED_ONE;      // Start with x^1 / 1!
-
-//     // for (int j = 1; j < FIXED_EXP_LIMIT; j++)
-//     // {
-//     //     term = FIXED_DIV(FIXED_MUL(term, x), i);
-//     //     result += term;
-//     //     i += FIXED_ONE;
-//     // }
-
-//     // if (FIXED_TO_FLOAT(result) < 0)
-//     // {
-//     //     fprintf(stderr, "exp_fixed: x = %f, result = %f\n", FIXED_TO_FLOAT(x), FIXED_TO_FLOAT(result));
-//     // }
-//     // return result;
-// }
-
-// // Fixed-point logarithm function
-// fixed_t log_fixed(fixed_t x)
-// {
-//     return FLOAT_TO_FIXED(logf(FIXED_TO_FLOAT(x)));
-//     // if (x <= 0)
-//     // {
-//     //     printf("Error: log(x) is undefined for x <= 0\n");
-//     //     return 0; // Return negative infinity to indicate error
-//     // }
-
-//     // // Initial guess for log(x)
-//     // fixed_t guess = x > FIXED_ONE ? x - FIXED_ONE : x;
-//     // fixed_t difference;
-
-//     // do
-//     // {
-//     //     fixed_t e_guess = exp_fixed(guess);
-//     //     difference = FIXED_DIV((x - e_guess), e_guess);
-//     //     guess += difference;
-//     // } while (difference > FIXED_LOG_PRECISION || difference < -FIXED_LOG_PRECISION);
-
-//     // return guess;
-// }
-
-void fixed_to_float_arr(fixed_t *arr, float *result, int n)
+fixed_t float_to_fixed(float f)
 {
-    for (int i = 0; i < n; i++)
+    return (fixed_t)round(f * FIXED_ONE);
+}
+
+float fixed_to_float(fixed_t fp)
+{
+    return ((float)fp) / FIXED_ONE;
+}
+
+fixed_t fixed_mul(fixed_t a, fixed_t b)
+{
+    return (fixed_t)((__int64_t)a * b >> FRAC_BITS);
+}
+
+fixed_t fixed_div(fixed_t a, fixed_t b)
+{
+    if (b == 0)
     {
-        result[i] = FIXED_TO_FLOAT(arr[i]);
+        return 0;
+        fprintf(stderr, "Division by zero\n");
+        exit(EXIT_FAILURE);
     }
+    return (fixed_t)((a << FRAC_BITS) / b);
+}
+
+fixed_t fixed_sqrt(fixed_t x)
+{
+    if (x <= 0)
+        return 0;
+
+    fixed_t result = x;
+    fixed_t delta;
+
+    // Newton-Raphson iteration
+    for (int i = 0; i < 16; i++) // 16 iterations for convergence
+    {
+        delta = fixed_div(x, result);
+        result = (result + delta) >> 1;
+    }
+
+    return result;
+}
+
+fixed_t fixed_exp(fixed_t x)
+{
+    return float_to_fixed(exp(fixed_to_float(x)));
+    // Convert fixed to float for exponential calculation
+    double xd = fixed_to_float(x);
+    return float_to_fixed(exp(xd));
+}
+
+fixed_t fixed_log(fixed_t x)
+{
+    return float_to_fixed(logf(fixed_to_float(x)));
+    if (x <= 0)
+    {
+        fprintf(stderr, "Logarithm of non-positive number\n");
+        exit(EXIT_FAILURE);
+    }
+    // Convert fixed to float for logarithm calculation
+    double xd = fixed_to_float(x);
+    return float_to_fixed(log(xd));
+}
+
+float *arr_to_float(float *out, fixed_t *arr, int size)
+{
+    for (int i = 0; i < size; i++)
+    {
+        out[i] = fixed_to_float(arr[i]);
+    }
+    return out;
 }
 
 // ----------------------------------------------------------------------------
@@ -133,27 +130,19 @@ typedef struct
     float *final_norm; // (dim)
     // (optional) classifier weights for the logits, on the last layer
     float *lm_head; // (rounded_vocab_size, dim)
-} MambaWeightsFloat;
 
-typedef struct
-{
-    // token embedding table
-    fixed_t *token_embedding_table; // (rounded_vocab_size, dim)
-    // weights for layers
-    fixed_t *in_proj;        // (layer, 2*d_inner, dim)
-    fixed_t *conv1d_weight;  // (layer, d_inner, 1, d_conv)
-    fixed_t *conv1d_bias;    // (layer, d_inner)
-    fixed_t *x_proj;         // (layer, dt_rank+2*d_state, d_inner)
-    fixed_t *dt_proj_weight; // (layer, d_inner, dt_rank)
-    fixed_t *dt_proj_bias;   // (layer, d_inner)
-    fixed_t *A;              // (layer, d_inner, d_state)
-    fixed_t *D;              // (layer, d_inner)
-    fixed_t *out_proj;       // (layer, dim, d_inner)
-    fixed_t *norm;           // (layer, dim)
-    // final rmsnorm
-    fixed_t *final_norm; // (dim)
-    // (optional) classifier weights for the logits, on the last layer
-    fixed_t *lm_head; // (rounded_vocab_size, dim)
+    fixed_t *norm_fixed;           // (layer, dim)
+    fixed_t *final_norm_fixed;     // (dim)
+    fixed_t *in_proj_fixed;        // (layer, 2*d_inner, dim)
+    fixed_t *conv1d_weight_fixed;  // (layer, d_inner, 1, d_conv)
+    fixed_t *conv1d_bias_fixed;    // (layer, d_inner)
+    fixed_t *x_proj_fixed;         // (layer, dt_rank+2*d_state, d_inner)
+    fixed_t *dt_proj_weight_fixed; // (layer, d_inner, dt_rank)
+    fixed_t *dt_proj_bias_fixed;   // (layer, d_inner)
+    fixed_t *A_fixed;              // (layer, d_inner, d_state)
+    fixed_t *D_fixed;              // (layer, d_inner)
+    fixed_t *out_proj_fixed;       // (layer, dim, d_inner)
+    fixed_t *lm_head_fixed;        // (rounded_vocab_size, dim)
 } MambaWeights;
 
 typedef struct
@@ -172,80 +161,177 @@ typedef struct
     // internal state, separate memory for each layer
     float *conv_state; // (n_layers, d_inner, d_conv)
     float *ssm_state;  // (n_layers, d_inner, d_state)
-} RunStateFloat;
 
-typedef struct
-{
-    // memory reused by all layers
-    fixed_t *input;        // (dim)
-    fixed_t *hidden_state; // (dim)
-    fixed_t *xz;           // (2*d_inner)          x and z are pointers into this buffer
-    fixed_t *x_db;         // (dt_rank+2*d_state)  dt, B, C are pointers into this buffer
-    fixed_t *dt;           // (d_inner)            later, dt is a pointer to this buffer
-    fixed_t *dA;           // (d_inner, d_state)
-    fixed_t *dB;           // (d_inner, d_state)
-    fixed_t *temp;         // (d_inner, d_state)
-    fixed_t *y;            // (d_inner)
-    fixed_t *logits;       // (rounded_vocab_size)
-    // internal state, separate memory for each layer
-    fixed_t *conv_state; // (n_layers, d_inner, d_conv)
-    fixed_t *ssm_state;  // (n_layers, d_inner, d_state)
+    fixed_t *input_fixed;        // (dim)
+    fixed_t *hidden_state_fixed; // (dim)
+    fixed_t *xz_fixed;           // (2*d_inner)          x and z are pointers into this buffer
+    fixed_t *conv_state_fixed;   // (n_layers, d_inner, d_conv)
+    fixed_t *temp_fixed;         // (d_inner, d_state)
+    fixed_t *x_db_fixed;         // (dt_rank+2*d_state)  dt, B, C are pointers into this buffer
+    fixed_t *dt_fixed;           // (d_inner)            later, dt is a pointer to this buffer
+    fixed_t *dA_fixed;           // (d_inner, d_state)
+    fixed_t *dB_fixed;           // (d_inner, d_state)
+    fixed_t *ssm_state_fixed;    // (n_layers, d_inner, d_state)
+    fixed_t *y_fixed;            // (d_inner)
+    fixed_t *logits_fixed;       // (rounded_vocab_size)
 } RunState;
 
 typedef struct
 {
-    Config config;                   // the hyperparameters of the architecture (the blueprint)
-    MambaWeights weights;            // the weights of the model
-    MambaWeightsFloat weights_float; // the weights of the model in float
-    RunState state;                  // buffers for the "wave" of activations in the forward pass
-    RunStateFloat state_float;       // buffers for the "wave" of activations in the forward pass in float
+    Config config;        // the hyperparameters of the architecture (the blueprint)
+    MambaWeights weights; // the weights of the model
+    RunState state;       // buffers for the "wave" of activations in the forward pass
     // some more state needed to properly clean up the memory mapping (sigh)
     int fd;            // file descriptor for memory mapping
     float *data;       // memory mapped data pointer
     ssize_t file_size; // size of the checkpoint file in bytes
 } Mamba;
 
-void malloc_run_state(RunState *s, RunStateFloat *sf, Config *p)
+void malloc_run_state(RunState *s, Config *p)
 {
     // memory reused by all layers
-    s->input = malloc(p->dim * sizeof(fixed_t));
-    s->hidden_state = malloc(p->dim * sizeof(fixed_t));
-    s->xz = malloc(2 * p->d_inner * sizeof(fixed_t));
-    s->x_db = malloc((p->dt_rank + 2 * p->d_state) * sizeof(fixed_t));
-    s->dt = malloc(p->d_inner * sizeof(fixed_t));
-    s->dA = malloc(p->d_inner * p->d_state * sizeof(fixed_t));
-    s->dB = malloc(p->d_inner * p->d_state * sizeof(fixed_t));
-    s->temp = malloc(p->d_inner * p->d_state * sizeof(fixed_t));
-    s->y = malloc(p->d_inner * sizeof(fixed_t));
-    s->logits = malloc(p->rounded_vocab_size * sizeof(fixed_t));
+    s->input = malloc(p->dim * sizeof(float));
+    s->hidden_state = malloc(p->dim * sizeof(float));
+    s->xz = malloc(2 * p->d_inner * sizeof(float));
+    s->x_db = malloc((p->dt_rank + 2 * p->d_state) * sizeof(float));
+    s->dt = malloc(p->d_inner * sizeof(float));
+    s->dA = malloc(p->d_inner * p->d_state * sizeof(float));
+    s->dB = malloc(p->d_inner * p->d_state * sizeof(float));
+    s->temp = malloc(p->d_inner * p->d_state * sizeof(float));
+    s->y = malloc(p->d_inner * sizeof(float));
+    s->logits = malloc(p->rounded_vocab_size * sizeof(float));
     // internal state, separate memory for each layer
-    s->conv_state = calloc(p->n_layers * p->d_inner * p->d_conv, sizeof(fixed_t));
-    s->ssm_state = calloc(p->n_layers * p->d_inner * p->d_state, sizeof(fixed_t));
+    s->conv_state = calloc(p->n_layers * p->d_inner * p->d_conv, sizeof(float));
+    s->ssm_state = calloc(p->n_layers * p->d_inner * p->d_state, sizeof(float));
     // ensure all mallocs went fine
     if (!s->xz || !s->x_db || !s->dt || !s->dA || !s->dB || !s->temp || !s->y || !s->logits || !s->conv_state || !s->ssm_state)
     {
         fprintf(stderr, "malloc failed!\n");
         exit(EXIT_FAILURE);
     }
+}
 
-    sf->input = malloc(p->dim * sizeof(float));
-    sf->hidden_state = malloc(p->dim * sizeof(float));
-    sf->xz = malloc(2 * p->d_inner * sizeof(float));
-    sf->x_db = malloc((p->dt_rank + 2 * p->d_state) * sizeof(float));
-    sf->dt = malloc(p->d_inner * sizeof(float));
-    sf->dA = malloc(p->d_inner * p->d_state * sizeof(float));
-    sf->dB = malloc(p->d_inner * p->d_state * sizeof(float));
-    sf->temp = malloc(p->d_inner * p->d_state * sizeof(float));
-    sf->y = malloc(p->d_inner * sizeof(float));
-    sf->logits = malloc(p->rounded_vocab_size * sizeof(float));
-    // internal state, separate memory for each layer
-    sf->conv_state = calloc(p->n_layers * p->d_inner * p->d_conv, sizeof(float));
-    sf->ssm_state = calloc(p->n_layers * p->d_inner * p->d_state, sizeof(float));
-    // ensure all mallocs went fine
-    if (!sf->xz || !sf->x_db || !sf->dt || !sf->dA || !sf->dB || !sf->temp || !sf->y || !sf->logits || !sf->conv_state || !sf->ssm_state)
+void convert_to_fixed_point(Mamba *mamba)
+{
+    Config *p = &mamba->config;
+    MambaWeights *w = &mamba->weights;
+    RunState *s = &mamba->state;
+
+    // convert the weights to fixed point
+    w->norm_fixed = malloc(p->n_layers * p->dim * sizeof(fixed_t));
+    w->final_norm_fixed = malloc(p->dim * sizeof(fixed_t));
+    w->in_proj_fixed = malloc(p->n_layers * 2 * p->d_inner * p->dim * sizeof(fixed_t));
+    w->conv1d_weight_fixed = malloc(p->n_layers * p->d_inner * 1 * p->d_conv * sizeof(fixed_t));
+    w->conv1d_bias_fixed = malloc(p->n_layers * p->d_inner * sizeof(fixed_t));
+    w->x_proj_fixed = malloc(p->n_layers * (p->dt_rank + 2 * p->d_state) * p->d_inner * sizeof(fixed_t));
+    w->dt_proj_weight_fixed = malloc(p->n_layers * p->d_inner * p->dt_rank * sizeof(fixed_t));
+    w->A_fixed = malloc(p->n_layers * p->d_inner * p->d_state * sizeof(fixed_t));
+    w->D_fixed = malloc(p->n_layers * p->d_inner * sizeof(fixed_t));
+    w->out_proj_fixed = malloc(p->n_layers * p->dim * p->d_inner * sizeof(fixed_t));
+    w->lm_head_fixed = malloc(p->rounded_vocab_size * p->dim * sizeof(fixed_t));
+    w->dt_proj_bias_fixed = malloc(p->n_layers * p->d_inner * sizeof(fixed_t));
+    // convert the weights to fixed point
+    for (int i = 0; i < p->n_layers * p->dim; i++)
     {
-        fprintf(stderr, "malloc failed!\n");
-        exit(EXIT_FAILURE);
+        w->norm_fixed[i] = float_to_fixed(w->norm[i]);
+    }
+    for (int i = 0; i < p->dim; i++)
+    {
+        w->final_norm_fixed[i] = float_to_fixed(w->final_norm[i]);
+    }
+    for (int i = 0; i < p->n_layers * 2 * p->d_inner * p->dim; i++)
+    {
+        w->in_proj_fixed[i] = float_to_fixed(w->in_proj[i]);
+    }
+    for (int i = 0; i < p->n_layers * p->d_inner * 1 * p->d_conv; i++)
+    {
+        w->conv1d_weight_fixed[i] = float_to_fixed(w->conv1d_weight[i]);
+    }
+    for (int i = 0; i < p->n_layers * p->d_inner; i++)
+    {
+        w->conv1d_bias_fixed[i] = float_to_fixed(w->conv1d_bias[i]);
+    }
+    for (int i = 0; i < p->n_layers * (p->dt_rank + 2 * p->d_state) * p->d_inner; i++)
+    {
+        w->x_proj_fixed[i] = float_to_fixed(w->x_proj[i]);
+    }
+    for (int i = 0; i < p->n_layers * p->d_inner * p->dt_rank; i++)
+    {
+        w->dt_proj_weight_fixed[i] = float_to_fixed(w->dt_proj_weight[i]);
+    }
+    for (int i = 0; i < p->n_layers * p->d_inner * p->d_state; i++)
+    {
+        w->A_fixed[i] = float_to_fixed(w->A[i]);
+    }
+    for (int i = 0; i < p->n_layers * p->d_inner; i++)
+    {
+        w->D_fixed[i] = float_to_fixed(w->D[i]);
+    }
+    for (int i = 0; i < p->n_layers * p->dim * p->d_inner; i++)
+    {
+        w->out_proj_fixed[i] = float_to_fixed(w->out_proj[i]);
+    }
+    for (int i = 0; i < p->rounded_vocab_size * p->dim; i++)
+    {
+        w->lm_head_fixed[i] = float_to_fixed(w->lm_head[i]);
+    }
+    for (int i = 0; i < p->n_layers * p->d_inner; i++)
+    {
+        w->dt_proj_bias_fixed[i] = float_to_fixed(w->dt_proj_bias[i]);
+    }
+
+    // convert the state to fixed point
+    s->input_fixed = malloc(p->dim * sizeof(fixed_t));
+    s->hidden_state_fixed = malloc(p->dim * sizeof(fixed_t));
+    s->xz_fixed = malloc(2 * p->d_inner * sizeof(fixed_t));
+    s->conv_state_fixed = malloc(p->n_layers * p->d_inner * p->d_conv * sizeof(fixed_t));
+    s->temp_fixed = malloc(p->d_inner * p->d_state * sizeof(fixed_t));
+    s->x_db_fixed = malloc((p->dt_rank + 2 * p->d_state) * sizeof(fixed_t));
+    s->dt_fixed = malloc(p->d_inner * sizeof(fixed_t));
+    s->dA_fixed = malloc(p->d_inner * p->d_state * sizeof(fixed_t));
+    s->dB_fixed = malloc(p->d_inner * p->d_state * sizeof(fixed_t));
+    s->ssm_state_fixed = malloc(p->n_layers * p->d_inner * p->d_state * sizeof(fixed_t));
+    s->y_fixed = malloc(p->d_inner * sizeof(fixed_t));
+    s->logits_fixed = malloc(p->rounded_vocab_size * sizeof(fixed_t));
+    // convert the state to fixed point
+    for (int i = 0; i < p->dim; i++)
+    {
+        s->input_fixed[i] = float_to_fixed(s->input[i]);
+        s->hidden_state_fixed[i] = float_to_fixed(s->hidden_state[i]);
+    }
+    for (int i = 0; i < 2 * p->d_inner; i++)
+    {
+        s->xz_fixed[i] = float_to_fixed(s->xz[i]);
+    }
+    for (int i = 0; i < p->n_layers * p->d_inner * p->d_conv; i++)
+    {
+        s->conv_state_fixed[i] = float_to_fixed(s->conv_state[i]);
+    }
+    for (int i = 0; i < p->d_inner * p->d_state; i++)
+    {
+        s->temp_fixed[i] = float_to_fixed(s->temp[i]);
+    }
+    for (int i = 0; i < p->dt_rank + 2 * p->d_state; i++)
+    {
+        s->x_db_fixed[i] = float_to_fixed(s->x_db[i]);
+    }
+    for (int i = 0; i < p->d_inner; i++)
+    {
+        s->dt_fixed[i] = float_to_fixed(s->dt[i]);
+        s->y_fixed[i] = float_to_fixed(s->y[i]);
+    }
+    for (int i = 0; i < p->d_inner * p->d_state; i++)
+    {
+        s->dA_fixed[i] = float_to_fixed(s->dA[i]);
+        s->dB_fixed[i] = float_to_fixed(s->dB[i]);
+    }
+    for (int i = 0; i < p->n_layers * p->d_inner * p->d_state; i++)
+    {
+        s->ssm_state_fixed[i] = float_to_fixed(s->ssm_state[i]);
+    }
+    for (int i = 0; i < p->rounded_vocab_size; i++)
+    {
+        s->logits_fixed[i] = float_to_fixed(s->logits[i]);
     }
 }
 
@@ -306,7 +392,7 @@ void free_run_state(RunState *s)
     free(s->ssm_state);
 }
 
-void memory_map_weights(MambaWeightsFloat *w, Config *p, float *ptr)
+void memory_map_weights(MambaWeights *w, Config *p, float *ptr)
 {
     // the multiplications below are done in 64-bit to fit the parameter counts of 13B+ models
     unsigned long long n_layers = p->n_layers;
@@ -339,7 +425,7 @@ void memory_map_weights(MambaWeightsFloat *w, Config *p, float *ptr)
     w->lm_head = p->shared_classifier ? w->token_embedding_table : ptr;
 }
 
-void load_model_file(char *model_path, Config *config, MambaWeights *weights, MambaWeightsFloat *weights_float,
+void load_model_file(char *model_path, Config *config, MambaWeights *weights,
                      int *fd, float **data, ssize_t *file_size)
 {
     FILE *file = fopen(model_path, "rb");
@@ -405,84 +491,16 @@ void load_model_file(char *model_path, Config *config, MambaWeights *weights, Ma
         fprintf(stderr, "read failed!\n");
         exit(EXIT_FAILURE);
     }
-    float *weights_float_ptr = *data + (256 / 4);
-    memory_map_weights(weights_float, config, weights_float_ptr);
-
-    // convert the weights to fixed-point
-    weights->token_embedding_table = malloc(config->rounded_vocab_size * config->dim * sizeof(fixed_t));
-    weights->in_proj = malloc(config->n_layers * 2 * config->d_inner * config->dim * sizeof(fixed_t));
-    weights->conv1d_weight = malloc(config->n_layers * config->d_inner * 1 * config->d_conv * sizeof(fixed_t));
-    weights->conv1d_bias = malloc(config->n_layers * config->d_inner * sizeof(fixed_t));
-    weights->x_proj = malloc(config->n_layers * (config->dt_rank + 2 * config->d_state) * config->d_inner * sizeof(fixed_t));
-    weights->dt_proj_weight = malloc(config->n_layers * config->d_inner * config->dt_rank * sizeof(fixed_t));
-    weights->dt_proj_bias = malloc(config->n_layers * config->d_inner * sizeof(fixed_t));
-    weights->A = malloc(config->n_layers * config->d_inner * config->d_state * sizeof(fixed_t));
-    weights->D = malloc(config->n_layers * config->d_inner * sizeof(fixed_t));
-    weights->out_proj = malloc(config->n_layers * config->dim * config->d_inner * sizeof(fixed_t));
-    weights->norm = malloc(config->n_layers * config->dim * sizeof(fixed_t));
-    weights->final_norm = malloc(config->dim * sizeof(fixed_t));
-    weights->lm_head = malloc(config->rounded_vocab_size * config->dim * sizeof(fixed_t));
-
-    for (int i = 0; i < config->rounded_vocab_size * config->dim; i++)
-    {
-        weights->token_embedding_table[i] = FLOAT_TO_FIXED(weights_float->token_embedding_table[i]);
-    }
-    for (int i = 0; i < config->n_layers * 2 * config->d_inner * config->dim; i++)
-    {
-        weights->in_proj[i] = FLOAT_TO_FIXED(weights_float->in_proj[i]);
-    }
-    for (int i = 0; i < config->n_layers * config->d_inner * 1 * config->d_conv; i++)
-    {
-        weights->conv1d_weight[i] = FLOAT_TO_FIXED(weights_float->conv1d_weight[i]);
-    }
-    for (int i = 0; i < config->n_layers * config->d_inner; i++)
-    {
-        weights->conv1d_bias[i] = FLOAT_TO_FIXED(weights_float->conv1d_bias[i]);
-    }
-    for (int i = 0; i < config->n_layers * (config->dt_rank + 2 * config->d_state) * config->d_inner; i++)
-    {
-        weights->x_proj[i] = FLOAT_TO_FIXED(weights_float->x_proj[i]);
-    }
-    for (int i = 0; i < config->n_layers * config->d_inner * config->dt_rank; i++)
-    {
-        weights->dt_proj_weight[i] = FLOAT_TO_FIXED(weights_float->dt_proj_weight[i]);
-    }
-    for (int i = 0; i < config->n_layers * config->d_inner; i++)
-    {
-        weights->dt_proj_bias[i] = FLOAT_TO_FIXED(weights_float->dt_proj_bias[i]);
-    }
-    for (int i = 0; i < config->n_layers * config->d_inner * config->d_state; i++)
-    {
-        weights->A[i] = FLOAT_TO_FIXED(weights_float->A[i]);
-    }
-    for (int i = 0; i < config->n_layers * config->d_inner; i++)
-    {
-        weights->D[i] = FLOAT_TO_FIXED(weights_float->D[i]);
-    }
-    for (int i = 0; i < config->n_layers * config->dim * config->d_inner; i++)
-    {
-        weights->out_proj[i] = FLOAT_TO_FIXED(weights_float->out_proj[i]);
-    }
-    for (int i = 0; i < config->n_layers * config->dim; i++)
-    {
-        weights->norm[i] = FLOAT_TO_FIXED(weights_float->norm[i]);
-    }
-    for (int i = 0; i < config->dim; i++)
-    {
-        weights->final_norm[i] = FLOAT_TO_FIXED(weights_float->final_norm[i]);
-    }
-    for (int i = 0; i < config->rounded_vocab_size * config->dim; i++)
-    {
-        weights->lm_head[i] = FLOAT_TO_FIXED(weights_float->lm_head[i]);
-    }
+    float *weights_ptr = *data + (256 / 4);
+    memory_map_weights(weights, config, weights_ptr);
 }
 
 void load_model(Mamba *m, char *model_path)
 {
     // read the Config and the Weights from the model file
-    load_model_file(model_path, &m->config, &m->weights, &m->weights_float, &m->fd, &m->data, &m->file_size);
+    load_model_file(model_path, &m->config, &m->weights, &m->fd, &m->data, &m->file_size);
     // allocate the RunState buffers
-    malloc_run_state(&m->state, &m->state_float, &m->config);
+    malloc_run_state(&m->state, &m->config);
 }
 
 void free_model(Mamba *m)
@@ -503,25 +521,38 @@ void free_model(Mamba *m)
 void rmsnorm(fixed_t *o, fixed_t *x, fixed_t *weight, int size)
 {
     // calculate sum of squares
-    // float ss = 0.0f;
     fixed_t ss = 0;
     for (int j = 0; j < size; j++)
     {
-        // ss += x[j] * x[j];
-        ss += FIXED_MUL(x[j], x[j]);
+        ss += fixed_mul(x[j], x[j]);
     }
-    // ss /= size;
-    ss = FIXED_DIV(ss, size);
-    ss += 1e-5f;
-    // ss = 1.0f / sqrtf(ss);
-    ss = FIXED_DIV(FIXED_ONE, sqrtf(FIXED_TO_FLOAT(ss)));
+    ss = ss / size;
+    ss += float_to_fixed(1e-5);
+    ss = float_to_fixed(1.0f / sqrtf(fixed_to_float(ss)));
     // normalize and scale
     for (int j = 0; j < size; j++)
     {
-        // o[j] = x[j] * weight[j] * ss;
-        o[j] = FIXED_MUL(FIXED_MUL(x[j], weight[j]), ss);
+        o[j] = fixed_mul(x[j], fixed_mul(weight[j], ss));
     }
 }
+
+// void rmsnorm(float *o, float *x, float *weight, int size)
+// {
+//     // calculate sum of squares
+//     float ss = 0.0f;
+//     for (int j = 0; j < size; j++)
+//     {
+//         ss += x[j] * x[j];
+//     }
+//     ss /= size;
+//     ss += 1e-5f;
+//     ss = 1.0f / sqrtf(ss);
+//     // normalize and scale
+//     for (int j = 0; j < size; j++)
+//     {
+//         o[j] = x[j] * weight[j] * ss;
+//     }
+// }
 
 void softmax(float *x, int size)
 {
@@ -550,22 +581,22 @@ void softmax(float *x, int size)
 
 fixed_t softplus(fixed_t x)
 {
-    return FLOAT_TO_FIXED(logf(1.0f + expf(FIXED_TO_FLOAT(x))));
+    return fixed_log(float_to_fixed(1.0) + fixed_exp(x));
 }
 
 fixed_t sigmoid(fixed_t x)
 {
-    return FLOAT_TO_FIXED(1.0f / (1.0f + expf(-FIXED_TO_FLOAT(x))));
+    return float_to_fixed(1.0 / (1.0 + (expf(fixed_to_float(-x)))));
+    return fixed_div(float_to_fixed(1.0), float_to_fixed(1.0) + fixed_exp(-x));
 }
 
 fixed_t silu(fixed_t x)
 {
-    return x * sigmoid(x);
+    return fixed_mul(x, sigmoid(x));
 }
 
 void shift_matrix_left(fixed_t *matrix, int rows, int cols)
 {
-    // #pragma omp parallel for
     for (int i = 0; i < rows; i++)
     {
         for (int j = 0; j < cols - 1; j++)
@@ -577,7 +608,6 @@ void shift_matrix_left(fixed_t *matrix, int rows, int cols)
 
 void update_last_column(fixed_t *matrix, fixed_t *x, int rows, int cols)
 {
-    // #pragma omp parallel for
     for (int i = 0; i < rows; i++)
     {
         matrix[i * cols + cols - 1] = x[i];
@@ -586,17 +616,12 @@ void update_last_column(fixed_t *matrix, fixed_t *x, int rows, int cols)
 
 void rowwise_dot_product(fixed_t *out, fixed_t *matrix, fixed_t *weights, int rows, int cols)
 {
-    // matrix[rows,cols], weights[cols] -> out[rows]
-    // this is a dot product of each row of the matrix with the weights
-    // i.e. out[i] = matrix[i,:] @ weights
-    // #pragma omp parallel for
     for (int i = 0; i < rows; i++)
     {
         fixed_t val = 0;
         for (int j = 0; j < cols; j++)
         {
-            // val += matrix[i * cols + j] * weights[j];
-            val += FIXED_MUL(matrix[i * cols + j], weights[j]);
+            val += fixed_mul(matrix[i * cols + j], weights[j]);
         }
         out[i] = val;
     }
@@ -604,43 +629,36 @@ void rowwise_dot_product(fixed_t *out, fixed_t *matrix, fixed_t *weights, int ro
 
 void matmul(fixed_t *xout, fixed_t *x, fixed_t *w, int d, int n)
 {
-    // if (d <= 100)
-    // {
-    //     for (int i = 0; i < d; i++)
-    //     {
-    //         for (int j = 0; j < n; j++)
-    //         {
-    //             fprintf(stderr, "w[%d][%d] = %f\n", i, j, w[i * n + j]);
-    //         }
-    //         printf("\n");
-    //     }
-    // }
-
-    // w[d,n] @ x[n] -> xout[d]
-    // #pragma omp parallel for
     for (int i = 0; i < d; i++)
     {
         fixed_t val = 0;
+        float prod = 0.0f;
+        fixed_t fixed_prod = 0;
         for (int j = 0; j < n; j++)
         {
-            // val += w[i * n + j] * x[j];
-            val += FIXED_MUL(w[i * n + j], x[j]);
+            prod = fixed_to_float(w[i * n + j]) * fixed_to_float(x[j]);
+            fixed_prod = fixed_mul(w[i * n + j], x[j]);
+            val += fixed_mul(w[i * n + j], x[j]);
+
+            // fprintf(stderr, "prod: %f, fixed_prod: %f, val: %f\n", prod, fixed_to_float(fixed_prod), fixed_to_float(val));
+
+            // if (j > 50)
+            // {
+            // }
         }
         xout[i] = val;
     }
+    // exit(1);
 }
 
 void linear(fixed_t *xout, fixed_t *x, fixed_t *w, fixed_t *b, int d, int n)
 {
-    // w[d,n] @ x[n] + b[d] -> xout[d]
-    // #pragma omp parallel for
     for (int i = 0; i < d; i++)
     {
         fixed_t val = 0;
         for (int j = 0; j < n; j++)
         {
-            // val += w[i * n + j] * x[j];
-            val += FIXED_MUL(w[i * n + j], x[j]);
+            val += fixed_mul(w[i * n + j], x[j]);
         }
         xout[i] = val + b[i];
     }
@@ -648,77 +666,264 @@ void linear(fixed_t *xout, fixed_t *x, fixed_t *w, fixed_t *b, int d, int n)
 
 void broadcast_multiply(fixed_t *out, fixed_t *x, fixed_t *y, int d, int n)
 {
-    // x[d], y[d,n] -> out[d,n]
-    // #pragma omp parallel for
     for (int i = 0; i < d; i++)
     {
         for (int j = 0; j < n; j++)
         {
             int index = i * n + j;
-            // out[index] = x[i] * y[index];
-            out[index] = FIXED_MUL(x[i], y[index]);
-            // out[i * n + j] = x[i] * y[i * n + j];
+            out[index] = fixed_mul(x[i], y[index]);
         }
     }
 }
 
 void elementwise_multiply(fixed_t *result, fixed_t *matrix1, fixed_t *matrix2, int total_elements)
 {
-    // #pragma omp parallel for
     for (int i = 0; i < total_elements; i++)
     {
-        // result[i] = matrix1[i] * matrix2[i];
-        result[i] = FIXED_MUL(matrix1[i], matrix2[i]);
+        result[i] = fixed_mul(matrix1[i], matrix2[i]);
     }
 }
 
 void elementwise_add(fixed_t *result, fixed_t *matrix1, fixed_t *matrix2, int total_elements)
 {
-    // #pragma omp parallel for
     for (int i = 0; i < total_elements; i++)
     {
-        // result[i] = matrix1[i] + matrix2[i];
         result[i] = matrix1[i] + matrix2[i];
     }
 }
 
 void elementwise_multiply_and_add(fixed_t *result, fixed_t *matrix1, fixed_t *matrix2, fixed_t *matrix3, int total_elements)
 {
-    // #pragma omp parallel for
     for (int i = 0; i < total_elements; i++)
     {
-        // result[i] = matrix1[i] * matrix2[i] + matrix3[i];
-        result[i] = FIXED_MUL(matrix1[i], matrix2[i]) + matrix3[i];
+        result[i] = fixed_mul(matrix1[i], matrix2[i]) + matrix3[i];
     }
 }
 
 void outer_product(fixed_t *out, fixed_t *x, fixed_t *y, int d, int n)
 {
-    // x[d], y[n] -> out[d,n]
-    // #pragma omp parallel for
     for (int i = 0; i < d; i++)
     {
         for (int j = 0; j < n; j++)
         {
-            out[i * n + j] = FIXED_MUL(x[i], y[j]);
+            out[i * n + j] = fixed_mul(x[i], y[j]);
         }
     }
 }
 
 void sum_along_last_dim(fixed_t *result, fixed_t *matrix, int rows, int cols)
 {
-    // #pragma omp parallel for
     for (int i = 0; i < rows; i++)
     {
         fixed_t val = 0;
         for (int j = 0; j < cols; j++)
         {
-            // val += matrix[i * cols + j];
             val += matrix[i * cols + j];
         }
         result[i] = val;
     }
 }
+
+// void rmsnorm(float *o, float *x, float *weight, int size)
+// {
+//     // calculate sum of squares
+//     float ss = 0.0f;
+//     for (int j = 0; j < size; j++)
+//     {
+//         ss += x[j] * x[j];
+//     }
+//     ss /= size;
+//     ss += 1e-5f;
+//     ss = 1.0f / sqrtf(ss);
+//     // normalize and scale
+//     for (int j = 0; j < size; j++)
+//     {
+//         o[j] = x[j] * weight[j] * ss;
+//     }
+// }
+
+// void softmax(float *x, int size)
+// {
+//     // find max value (for numerical stability)
+//     float max_val = x[0];
+//     for (int i = 1; i < size; i++)
+//     {
+//         if (x[i] > max_val)
+//         {
+//             max_val = x[i];
+//         }
+//     }
+//     // exp and sum
+//     float sum = 0.0f;
+//     for (int i = 0; i < size; i++)
+//     {
+//         x[i] = expf(x[i] - max_val);
+//         sum += x[i];
+//     }
+//     // normalize
+//     for (int i = 0; i < size; i++)
+//     {
+//         x[i] /= sum;
+//     }
+// }
+
+// float softplus(float x)
+// {
+//     return logf(1.0f + expf(x));
+// }
+
+// float sigmoid(float x)
+// {
+//     return 1.0f / (1.0f + expf(-x));
+// }
+
+// float silu(float x)
+// {
+//     return x * sigmoid(x);
+// }
+
+// void shift_matrix_left(float *matrix, int rows, int cols)
+// {
+//     // #pragma omp parallel for
+//     for (int i = 0; i < rows; i++)
+//     {
+//         for (int j = 0; j < cols - 1; j++)
+//         {
+//             matrix[i * cols + j] = matrix[i * cols + j + 1];
+//         }
+//     }
+// }
+
+// void update_last_column(float *matrix, float *x, int rows, int cols)
+// {
+//     // #pragma omp parallel for
+//     for (int i = 0; i < rows; i++)
+//     {
+//         matrix[i * cols + cols - 1] = x[i];
+//     }
+// }
+
+// void rowwise_dot_product(float *out, float *matrix, float *weights, int rows, int cols)
+// {
+//     // matrix[rows,cols], weights[cols] -> out[rows]
+//     // this is a dot product of each row of the matrix with the weights
+//     // i.e. out[i] = matrix[i,:] @ weights
+//     // #pragma omp parallel for
+//     for (int i = 0; i < rows; i++)
+//     {
+//         float val = 0.0f;
+//         for (int j = 0; j < cols; j++)
+//         {
+//             val += matrix[i * cols + j] * weights[j];
+//         }
+//         out[i] = val;
+//     }
+// }
+
+// void matmul(float *xout, float *x, float *w, int d, int n)
+// {
+//     // w[d,n] @ x[n] -> xout[d]
+//     // #pragma omp parallel for
+//     // printf("x: %d, %d\n", d, n);
+//     // print matrix
+
+//     for (int i = 0; i < d; i++)
+//     {
+//         float val = 0.0f;
+//         for (int j = 0; j < n; j++)
+//         {
+//             val += w[i * n + j] * x[j];
+//         }
+//         xout[i] = val;
+//     }
+// }
+
+// void linear(float *xout, float *x, float *w, float *b, int d, int n)
+// {
+//     // w[d,n] @ x[n] + b[d] -> xout[d]
+//     // #pragma omp parallel for
+//     for (int i = 0; i < d; i++)
+//     {
+//         float val = 0.0f;
+//         for (int j = 0; j < n; j++)
+//         {
+//             val += w[i * n + j] * x[j];
+//         }
+//         xout[i] = val + b[i];
+//     }
+// }
+
+// void broadcast_multiply(float *out, float *x, float *y, int d, int n)
+// {
+//     // x[d], y[d,n] -> out[d,n]
+//     // #pragma omp parallel for
+//     for (int i = 0; i < d; i++)
+//     {
+//         for (int j = 0; j < n; j++)
+//         {
+//             int index = i * n + j;
+//             out[index] = x[i] * y[index];
+//             // out[i * n + j] = x[i] * y[i * n + j];
+//         }
+//     }
+// }
+
+// void elementwise_multiply(float *result, float *matrix1, float *matrix2, int total_elements)
+// {
+//     // #pragma omp parallel for
+//     // 6144
+//     for (int i = 0; i < total_elements; i++)
+//     {
+//         result[i] = matrix1[i] * matrix2[i];
+//     }
+// }
+
+// void elementwise_add(float *result, float *matrix1, float *matrix2, int total_elements)
+// {
+//     // #pragma omp parallel for
+//     // 1536
+//     for (int i = 0; i < total_elements; i++)
+//     {
+//         result[i] = matrix1[i] + matrix2[i];
+//     }
+// }
+
+// void elementwise_multiply_and_add(float *result, float *matrix1, float *matrix2, float *matrix3, int total_elements)
+// {
+//     // #pragma omp parallel for
+//     // 1536 or 24576
+//     for (int i = 0; i < total_elements; i++)
+//     {
+//         result[i] = matrix1[i] * matrix2[i] + matrix3[i];
+//     }
+// }
+
+// void outer_product(float *out, float *x, float *y, int d, int n)
+// {
+//     // x[d], y[n] -> out[d,n]
+//     // #pragma omp parallel for
+//     for (int i = 0; i < d; i++)
+//     {
+//         for (int j = 0; j < n; j++)
+//         {
+//             out[i * n + j] = x[i] * y[j];
+//         }
+//     }
+// }
+
+// void sum_along_last_dim(float *result, float *matrix, int rows, int cols)
+// {
+//     // #pragma omp parallel for
+//     for (int i = 0; i < rows; i++)
+//     {
+//         float val = 0.0f;
+//         for (int j = 0; j < cols; j++)
+//         {
+//             val += matrix[i * cols + j];
+//         }
+//         result[i] = val;
+//     }
+// }
 
 void forward_layer(Mamba *mamba, unsigned long long l, fixed_t *hidden_state)
 {
@@ -726,19 +931,19 @@ void forward_layer(Mamba *mamba, unsigned long long l, fixed_t *hidden_state)
     MambaWeights *w = &mamba->weights;
     RunState *s = &mamba->state;
     int dim = p->dim, d_inner = p->d_inner, d_conv = p->d_conv, d_state = p->d_state, dt_rank = p->dt_rank;
-    fixed_t *dA = s->dA; // (d_inner, d_state)
-    fixed_t *dB = s->dB; // (d_inner, d_state)
-    fixed_t *y = s->y;   // (d_inner)
+    fixed_t *dA = s->dA_fixed; // (d_inner, d_state)
+    fixed_t *dB = s->dB_fixed; // (d_inner, d_state)
+    fixed_t *y = s->y_fixed;   // (d_inner)
 
     // conv_state, ssm_state = self._get_states_from_cache(inference_params)
-    fixed_t *conv_state = s->conv_state + l * d_inner * d_conv;
-    fixed_t *ssm_state = s->ssm_state + l * d_inner * d_state;
+    fixed_t *conv_state = s->conv_state_fixed + l * d_inner * d_conv;
+    fixed_t *ssm_state = s->ssm_state_fixed + l * d_inner * d_state;
 
     // xz = self.in_proj(hidden_states)  # hidden_states: (dim), in_proj (2*d_inner, dim), xz (2*d_inner)
-    matmul(s->xz, hidden_state, w->in_proj + l * 2 * d_inner * dim, 2 * d_inner, dim);
+    matmul(s->xz_fixed, hidden_state, w->in_proj_fixed + l * 2 * d_inner * dim, 2 * d_inner, dim);
     // x, z = xz.chunk(2, dim=-1)
-    fixed_t *x = s->xz;           // x (d_inner)
-    fixed_t *z = s->xz + d_inner; // z (d_inner)
+    fixed_t *x = s->xz_fixed;           // x (d_inner)
+    fixed_t *z = s->xz_fixed + d_inner; // z (d_inner)
 
     // Conv step
 
@@ -747,10 +952,10 @@ void forward_layer(Mamba *mamba, unsigned long long l, fixed_t *hidden_state)
     // conv_state[:, -1] = x
     update_last_column(conv_state, x, d_inner, d_conv);
     // x = torch.sum(conv_state * rearrange(self.conv1d.weight, "d 1 w -> d w"), dim=-1)
-    elementwise_multiply(s->temp, conv_state, w->conv1d_weight + l * d_inner * d_conv, d_inner * d_conv);
-    sum_along_last_dim(x, s->temp, d_inner, d_conv);
+    elementwise_multiply(s->temp_fixed, conv_state, w->conv1d_weight_fixed + l * d_inner * d_conv, d_inner * d_conv);
+    sum_along_last_dim(x, s->temp_fixed, d_inner, d_conv);
     // x = x + self.conv1d.bias
-    elementwise_add(x, x, w->conv1d_bias + l * d_inner, d_inner);
+    elementwise_add(x, x, w->conv1d_bias_fixed + l * d_inner, d_inner);
     // x = F.silu(x)
     for (int i = 0; i < d_inner; i++)
     {
@@ -760,15 +965,15 @@ void forward_layer(Mamba *mamba, unsigned long long l, fixed_t *hidden_state)
     // SSM step
 
     // x_db = self.x_proj(x)   # x_db (dt_rank+2*d_state)
-    matmul(s->x_db, x, w->x_proj + l * (dt_rank + 2 * d_state) * d_inner, dt_rank + 2 * d_state, d_inner);
+    matmul(s->x_db_fixed, x, w->x_proj_fixed + l * (dt_rank + 2 * d_state) * d_inner, dt_rank + 2 * d_state, d_inner);
     // dt, B, C = torch.split(x_db, [self.dt_rank, self.d_state, self.d_state], dim=-1)
-    fixed_t *dt = s->x_db;                    // dt (dt_rank)
-    fixed_t *B = s->x_db + dt_rank;           // B  (d_state)
-    fixed_t *C = s->x_db + dt_rank + d_state; // C  (d_state)
+    fixed_t *dt = s->x_db_fixed;                    // dt (dt_rank)
+    fixed_t *B = s->x_db_fixed + dt_rank;           // B  (d_state)
+    fixed_t *C = s->x_db_fixed + dt_rank + d_state; // C  (d_state)
 
     // dt = self.dt_proj(dt)   # dt (dt_rank), dt_proj_weight (d_inner, dt_rank), dt_proj_bias (d_inner)
-    linear(s->dt, dt, w->dt_proj_weight + l * d_inner * dt_rank, w->dt_proj_bias + l * d_inner, d_inner, dt_rank);
-    dt = s->dt; // NOTE: dt is now bigger: (d_inner) instead of (dt_rank)
+    linear(s->dt_fixed, dt, w->dt_proj_weight_fixed + l * d_inner * dt_rank, w->dt_proj_bias_fixed + l * d_inner, d_inner, dt_rank);
+    dt = s->dt_fixed; // NOTE: dt is now bigger: (d_inner) instead of (dt_rank)
     // dt = F.softplus(dt)
     for (int i = 0; i < d_inner; i++)
     {
@@ -777,33 +982,32 @@ void forward_layer(Mamba *mamba, unsigned long long l, fixed_t *hidden_state)
 
     //  Discretize A and B
     // dA = torch.exp(torch.einsum("d,dn->dn", dt, self.A))   # A (d_inner, d_state), dA (d_inner, d_state)
-    broadcast_multiply(dA, dt, w->A + l * d_inner * d_state, d_inner, d_state);
+    broadcast_multiply(dA, dt, w->A_fixed + l * d_inner * d_state, d_inner, d_state);
     for (int i = 0; i < d_inner * d_state; i++)
     {
-        dA[i] = FLOAT_TO_FIXED(expf(FIXED_TO_FLOAT(dA[i])));
+        dA[i] = expf(dA[i]);
     }
     // dB = torch.einsum("d,n->dn", dt, B)    # dt (d_inner), B (d_state), dB (d_inner, d_state)
-    B = malloc(d_state * sizeof(fixed_t));
     outer_product(dB, dt, B, d_inner, d_state);
 
     //  Update ssm_state
     // ssm_state.copy_(ssm_state * dA + rearrange(x, "d -> d 1") * dB)
-    broadcast_multiply(s->temp, x, dB, d_inner, d_state);
-    elementwise_multiply_and_add(ssm_state, ssm_state, dA, s->temp, d_inner * d_state);
+    broadcast_multiply(s->temp_fixed, x, dB, d_inner, d_state);
+    elementwise_multiply_and_add(ssm_state, ssm_state, dA, s->temp_fixed, d_inner * d_state);
 
     //  Compute y
     // y = torch.einsum("dn,n->d", ssm_state, C) # ssm_state (d_inner, d_state), C (d_state), y (d_inner)
     rowwise_dot_product(y, ssm_state, C, d_inner, d_state);
     // y = y + self.D * x
-    elementwise_multiply_and_add(y, w->D + l * d_inner, x, y, d_inner);
+    elementwise_multiply_and_add(y, w->D_fixed + l * d_inner, x, y, d_inner);
     // y = y * F.silu(z)  # (d_inner)
     for (int i = 0; i < d_inner; i++)
     {
-        y[i] = y[i] * silu(z[i]);
+        y[i] = fixed_mul(y[i], silu(z[i]));
     }
 
     // hidden_state = self.out_proj(y)  # out_proj (dim, d_inner), hidden_state (dim)
-    matmul(hidden_state, y, w->out_proj + l * dim * d_inner, dim, d_inner);
+    matmul(hidden_state, y, w->out_proj_fixed + l * dim * d_inner, dim, d_inner);
 }
 
 float *forward(Mamba *mamba, int token)
@@ -811,29 +1015,28 @@ float *forward(Mamba *mamba, int token)
     // a few convenience variables
     Config *p = &mamba->config;
     MambaWeights *w = &mamba->weights;
-    MambaWeightsFloat *w_float = &mamba->weights_float;
     RunState *s = &mamba->state;
-    RunStateFloat *sf = &mamba->state_float;
     int dim = p->dim;
-    float *input_float = sf->input;
-    fixed_t *input = s->input;
-    fixed_t *hidden_state = s->hidden_state;
+    float *input_float = s->input;
+    fixed_t *hidden_state = s->hidden_state_fixed;
 
     // copy the token embedding into x
-    float *content_row = w_float->token_embedding_table + token * dim;
+    float *content_row = w->token_embedding_table + token * dim;
     memcpy(input_float, content_row, dim * sizeof(float));
 
-    // convert the input to fixed-point
+    // convert the input to fixed point
+    fixed_t *input = s->input_fixed;
     for (int i = 0; i < dim; i++)
     {
-        input[i] = FLOAT_TO_FIXED(input_float[i]);
+        input[i] = float_to_fixed(input_float[i]);
     }
 
     // forward all the layers
     for (unsigned long long l = 0; l < p->n_layers; l++)
     {
         // normalize the input
-        rmsnorm(hidden_state, input, w->norm + l * dim, dim);
+        rmsnorm(hidden_state, input, w->norm_fixed + l * dim, dim);
+
         // forward this layer
         forward_layer(mamba, l, hidden_state);
         // residual connection back into hidden_state
@@ -846,12 +1049,12 @@ float *forward(Mamba *mamba, int token)
     }
 
     // final rmsnorm
-    rmsnorm(hidden_state, hidden_state, w->final_norm, dim);
+    rmsnorm(hidden_state, hidden_state, w->final_norm_fixed, dim);
 
     // classifier into logits
-    matmul(s->logits, hidden_state, w->lm_head, p->rounded_vocab_size, p->dim);
-    fixed_to_float_arr(s->logits, sf->logits, p->rounded_vocab_size);
-    return sf->logits;
+    matmul(s->logits_fixed, hidden_state, w->lm_head_fixed, p->rounded_vocab_size, p->dim);
+    arr_to_float(s->logits, s->logits_fixed, p->rounded_vocab_size);
+    return s->logits;
 }
 
 // ----------------------------------------------------------------------------
@@ -1064,7 +1267,7 @@ void encode(Tokenizer *t, char *text, int8_t add_bos, int8_t add_eos, int *token
     }
 
     // Okay UTF-8 time. This will get messy. Here is the reference from Wikipedia:
-    // Code point â UTF-8 conversion
+    // Code point ↔ UTF-8 conversion
     // First code point	Last code point	Byte 1	Byte 2	Byte 3	Byte 4
     // U+0000	U+007F	    0xxxxxxx
     // U+0080	U+07FF	    110xxxxx	10xxxxxx
@@ -1372,8 +1575,8 @@ float generate(Mamba *mamba, Tokenizer *tokenizer, Sampler *sampler, char *promp
     if (num_prompt_tokens > 1)
     {
         char *piece = decode(tokenizer, EOS, prompt_tokens[0]);
-        // safe_printf(piece);
-        // fflush(stdout);
+        safe_printf(piece);
+        fflush(stdout);
     }
 
     // Buffer to store all generated tokens
@@ -1389,9 +1592,6 @@ float generate(Mamba *mamba, Tokenizer *tokenizer, Sampler *sampler, char *promp
     while (pos < steps)
     {
 
-        // forward the model to get logits for the next token
-        float *logits = forward(mamba, token);
-
         // advance the state machine
         if (pos < num_prompt_tokens - 1)
         {
@@ -1400,6 +1600,8 @@ float generate(Mamba *mamba, Tokenizer *tokenizer, Sampler *sampler, char *promp
         }
         else
         {
+            // forward the model to get logits for the next token
+            float *logits = forward(mamba, token);
             // otherwise sample the next token from the logits
             next = sample(sampler, logits);
         }
@@ -1416,8 +1618,8 @@ float generate(Mamba *mamba, Tokenizer *tokenizer, Sampler *sampler, char *promp
 
         // print the token as string, decode it with the Tokenizer object
         char *piece = decode(tokenizer, token, next);
-        // safe_printf(piece); // same as printf("%s", piece), but skips "unsafe" bytes
-        // fflush(stdout);
+        safe_printf(piece); // same as printf("%s", piece), but skips "unsafe" bytes
+        fflush(stdout);
         token = next;
 
         // init the timer here because the first iteration can be slower
@@ -1438,8 +1640,7 @@ float generate(Mamba *mamba, Tokenizer *tokenizer, Sampler *sampler, char *promp
     free(prompt_tokens);
 
     // Compute and print the MSE
-    float mse = calculate_mse(tokens_file, generated_tokens, generated_count, mamba->weights_float.token_embedding_table, mamba->config.dim);
-    printf("MSE: %f\n", mse);
+    float mse = calculate_mse(tokens_file, generated_tokens, generated_count, mamba->weights.token_embedding_table, mamba->config.dim);
 
     return mse;
 }
@@ -1593,10 +1794,10 @@ float calculate_mse(const char *filename, int *tokens, int num_tokens, float *em
         count++;
         if (count > num_tokens)
         {
-            fprintf(stderr, "Number of tokens in file exceeds expected count\n");
+            fprintf(stderr, "Number of tokens in file exceeds expected count: %d\n", num_tokens);
             // free(stored_tokens);
             // fclose(file);
-            return -1;
+            // return -1;
             break;
         }
     }
@@ -1651,14 +1852,6 @@ void error_usage()
 
 int main(int argc, char *argv[])
 {
-    // fprintf(stderr, "e^20: %f\n", exp(20));
-    // float a = 12;
-    // fixed_t b = FLOAT_TO_FIXED(a);
-    // fixed_t c = FIXED_DIV(b, FLOAT_TO_FIXED(3));
-    // fixed_t d = exp_fixed(b);
-    // fprintf(stderr, "a: %f, b: %f, c: %f, d: %f\n", a, FIXED_TO_FLOAT(b), FIXED_TO_FLOAT(c), FIXED_TO_FLOAT(d));
-    // exit(EXIT_FAILURE);
-
     // default parameters
     char *model_path = NULL; // e.g. out/model.bin
     char *tokenizer_path = "tokenizer.bin";
@@ -1672,7 +1865,7 @@ int main(int argc, char *argv[])
 
     model_path = "model.bin";
     steps = 50;
-    prompt = "Customer Support should";
+    prompt = "Operating on fixed-point numbers is a common";
     temperature = 0.0;
 
     // poor man's C argparse so we can override the defaults above from the command line
@@ -1770,18 +1963,9 @@ int main(int argc, char *argv[])
     // run!
     if (strcmp(mode, "generate") == 0)
     {
-        int steps = 50;
-        float mse = 0.0f;
-        for (int i = 0; i < steps; i++)
-        {
-            float current_mse = generate(&mamba, &tokenizer, &sampler, prompt, steps);
-            if (current_mse > 0)
-            {
-                mse += current_mse;
-            }
-        }
-        mse /= steps;
-        printf("Average MSE: %f\n", mse);
+        convert_to_fixed_point(&mamba);
+        float mse = generate(&mamba, &tokenizer, &sampler, prompt, steps);
+        fprintf(stderr, "MSE: %f\n", mse);
     }
     else if (strcmp(mode, "chat") == 0)
     {
