@@ -9,17 +9,44 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+// functions to calculate amount of cycles
+#define COUNT_CYCLES
+
+// Function to read the time-stamp counter
+static inline __int64_t rdtsc_start()
+{
+    unsigned int lo, hi;
+    asm volatile("cpuid\n\t"
+                 "rdtsc\n\t"
+                 "mov %%edx, %0\n\t"
+                 "mov %%eax, %1\n\t"
+                 : "=r"(hi), "=r"(lo)::"%rax", "%rbx", "%rcx", "%rdx");
+    return ((__int64_t)hi << 32) | lo;
+}
+
+// Function to read the time-stamp counter again
+static inline __int64_t rdtsc_end()
+{
+    unsigned int lo, hi;
+    asm volatile("rdtscp\n\t"
+                 "mov %%edx, %0\n\t"
+                 "mov %%eax, %1\n\t"
+                 "cpuid\n\t"
+                 : "=r"(hi), "=r"(lo)::"%rax", "%rbx", "%rcx", "%rdx");
+    return ((__int64_t)hi << 32) | lo;
+}
+
 // Function prototype for calculate_mse
 float calculate_mse(const char *filename, int *tokens, int num_tokens, float *embedding_table, int embedding_dim);
 
 // ----------------------------------------------------------------------------
 // Fixed point arithmetic
-#define FRAC_BITS 16
-#define FIXED_ONE (1 << FRAC_BITS)
-#define FIXED_HALF (1 << (FRAC_BITS - 1))
+#define FRAC_BITS 32
+#define FIXED_ONE ((__int64_t)1 << FRAC_BITS)
+#define FIXED_HALF ((__int64_t)1 << (FRAC_BITS - 1))
 #define FIXED_EPSILON (1)
 
-typedef __int32_t fixed_t;
+typedef __int64_t fixed_t;
 
 fixed_t float_to_fixed(float f)
 {
@@ -33,7 +60,7 @@ float fixed_to_float(fixed_t fp)
 
 fixed_t fixed_mul(fixed_t a, fixed_t b)
 {
-    return (fixed_t)((__int64_t)a * b >> FRAC_BITS);
+    return (fixed_t)((__int128_t)a * b >> FRAC_BITS);
 }
 
 fixed_t fixed_div(fixed_t a, fixed_t b)
@@ -1555,6 +1582,10 @@ int sample(Sampler *sampler, float *logits)
 
 float generate(Mamba *mamba, Tokenizer *tokenizer, Sampler *sampler, char *prompt, int steps)
 {
+#ifdef COUNT_CYCLES
+    __int64_t start_cycle_count = rdtsc_start();
+#endif
+
     char *empty_prompt = "";
     if (prompt == NULL)
     {
@@ -1638,6 +1669,11 @@ float generate(Mamba *mamba, Tokenizer *tokenizer, Sampler *sampler, char *promp
     // }
 
     free(prompt_tokens);
+
+#ifdef COUNT_CYCLES
+    __int64_t end_cycle_count = rdtsc_end();
+    printf("Cycles taken: %ld\n", end_cycle_count - start_cycle_count);
+#endif
 
     // Compute and print the MSE
     float mse = calculate_mse(tokens_file, generated_tokens, generated_count, mamba->weights.token_embedding_table, mamba->config.dim);
