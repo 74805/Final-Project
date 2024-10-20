@@ -63,41 +63,9 @@ fixed_t fixed_mul(fixed_t a, fixed_t b)
     return (fixed_t)((__int128_t)a * b >> FRAC_BITS);
 }
 
-fixed_t fixed_div(fixed_t a, fixed_t b)
-{
-    if (b == 0)
-    {
-        return 0;
-        fprintf(stderr, "Division by zero\n");
-        exit(EXIT_FAILURE);
-    }
-    return (fixed_t)((a << FRAC_BITS) / b);
-}
-
-fixed_t fixed_sqrt(fixed_t x)
-{
-    if (x <= 0)
-        return 0;
-
-    fixed_t result = x;
-    fixed_t delta;
-
-    // Newton-Raphson iteration
-    for (int i = 0; i < 16; i++) // 16 iterations for convergence
-    {
-        delta = fixed_div(x, result);
-        result = (result + delta) >> 1;
-    }
-
-    return result;
-}
-
 fixed_t fixed_exp(fixed_t x)
 {
     return float_to_fixed(exp(fixed_to_float(x)));
-    // Convert fixed to float for exponential calculation
-    double xd = fixed_to_float(x);
-    return float_to_fixed(exp(xd));
 }
 
 fixed_t fixed_log(fixed_t x)
@@ -553,7 +521,7 @@ void rmsnorm(fixed_t *o, fixed_t *x, fixed_t *weight, int size)
     {
         ss += fixed_mul(x[j], x[j]);
     }
-    ss = ss / size;
+    ss = float_to_fixed(fixed_to_float(ss) / size);
     ss += float_to_fixed(1e-5);
     ss = float_to_fixed(1.0f / sqrtf(fixed_to_float(ss)));
     // normalize and scale
@@ -562,24 +530,6 @@ void rmsnorm(fixed_t *o, fixed_t *x, fixed_t *weight, int size)
         o[j] = fixed_mul(x[j], fixed_mul(weight[j], ss));
     }
 }
-
-// void rmsnorm(float *o, float *x, float *weight, int size)
-// {
-//     // calculate sum of squares
-//     float ss = 0.0f;
-//     for (int j = 0; j < size; j++)
-//     {
-//         ss += x[j] * x[j];
-//     }
-//     ss /= size;
-//     ss += 1e-5f;
-//     ss = 1.0f / sqrtf(ss);
-//     // normalize and scale
-//     for (int j = 0; j < size; j++)
-//     {
-//         o[j] = x[j] * weight[j] * ss;
-//     }
-// }
 
 void softmax(float *x, int size)
 {
@@ -613,8 +563,7 @@ fixed_t softplus(fixed_t x)
 
 fixed_t sigmoid(fixed_t x)
 {
-    return float_to_fixed(1.0 / (1.0 + (expf(fixed_to_float(-x)))));
-    return fixed_div(float_to_fixed(1.0), float_to_fixed(1.0) + fixed_exp(-x));
+    return float_to_fixed(1.0 / (1.0 + (expf(-1 * fixed_to_float(x)))));
 }
 
 fixed_t silu(fixed_t x)
@@ -656,26 +605,16 @@ void rowwise_dot_product(fixed_t *out, fixed_t *matrix, fixed_t *weights, int ro
 
 void matmul(fixed_t *xout, fixed_t *x, fixed_t *w, int d, int n)
 {
+    // print dimnestions
     for (int i = 0; i < d; i++)
     {
         fixed_t val = 0;
-        float prod = 0.0f;
-        fixed_t fixed_prod = 0;
         for (int j = 0; j < n; j++)
         {
-            prod = fixed_to_float(w[i * n + j]) * fixed_to_float(x[j]);
-            fixed_prod = fixed_mul(w[i * n + j], x[j]);
             val += fixed_mul(w[i * n + j], x[j]);
-
-            // fprintf(stderr, "prod: %f, fixed_prod: %f, val: %f\n", prod, fixed_to_float(fixed_prod), fixed_to_float(val));
-
-            // if (j > 50)
-            // {
-            // }
         }
         xout[i] = val;
     }
-    // exit(1);
 }
 
 void linear(fixed_t *xout, fixed_t *x, fixed_t *w, fixed_t *b, int d, int n)
@@ -693,12 +632,13 @@ void linear(fixed_t *xout, fixed_t *x, fixed_t *w, fixed_t *b, int d, int n)
 
 void broadcast_multiply(fixed_t *out, fixed_t *x, fixed_t *y, int d, int n)
 {
+    int index = 0;
     for (int i = 0; i < d; i++)
     {
         for (int j = 0; j < n; j++)
         {
-            int index = i * n + j;
             out[index] = fixed_mul(x[i], y[index]);
+            index++;
         }
     }
 }
@@ -1012,7 +952,7 @@ void forward_layer(Mamba *mamba, unsigned long long l, fixed_t *hidden_state)
     broadcast_multiply(dA, dt, w->A_fixed + l * d_inner * d_state, d_inner, d_state);
     for (int i = 0; i < d_inner * d_state; i++)
     {
-        dA[i] = expf(dA[i]);
+        dA[i] = fixed_exp(dA[i]);
     }
     // dB = torch.einsum("d,n->dn", dt, B)    # dt (d_inner), B (d_state), dB (d_inner, d_state)
     outer_product(dB, dt, B, d_inner, d_state);
@@ -1901,71 +1841,8 @@ int main(int argc, char *argv[])
 
     model_path = "model.bin";
     steps = 50;
-    prompt = "Operating on fixed-point numbers is a common";
+    prompt = "Customer Support should";
     temperature = 0.0;
-
-    // poor man's C argparse so we can override the defaults above from the command line
-    // if (argc >= 2)
-    // {
-    //     model_path = argv[1];
-    // }
-    // else
-    // {
-    //     error_usage();
-    // }
-    // for (int i = 2; i < argc; i += 2)
-    // {
-    //     // do some basic validation
-    //     if (i + 1 >= argc)
-    //     {
-    //         error_usage();
-    //     } // must have arg after flag
-    //     if (argv[i][0] != '-')
-    //     {
-    //         error_usage();
-    //     } // must start with dash
-    //     if (strlen(argv[i]) != 2)
-    //     {
-    //         error_usage();
-    //     } // must be -x (one dash, one letter)
-    //     // read in the args
-    //     if (argv[i][1] == 't')
-    //     {
-    //         temperature = atof(argv[i + 1]);
-    //     }
-    //     else if (argv[i][1] == 'p')
-    //     {
-    //         topp = atof(argv[i + 1]);
-    //     }
-    //     else if (argv[i][1] == 's')
-    //     {
-    //         rng_seed = atoi(argv[i + 1]);
-    //     }
-    //     else if (argv[i][1] == 'n')
-    //     {
-    //         steps = atoi(argv[i + 1]);
-    //     }
-    //     else if (argv[i][1] == 'i')
-    //     {
-    //         prompt = argv[i + 1];
-    //     }
-    //     else if (argv[i][1] == 'z')
-    //     {
-    //         tokenizer_path = argv[i + 1];
-    //     }
-    //     else if (argv[i][1] == 'm')
-    //     {
-    //         mode = argv[i + 1];
-    //     }
-    //     else if (argv[i][1] == 'y')
-    //     {
-    //         system_prompt = argv[i + 1];
-    //     }
-    //     else
-    //     {
-    //         error_usage();
-    //     }
-    // }
 
     // parameter validation/overrides
     if (rng_seed <= 0)
