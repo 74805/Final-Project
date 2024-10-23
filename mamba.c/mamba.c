@@ -206,6 +206,50 @@ void malloc_run_state(RunState *s, Config *p)
     }
 }
 
+void save_fixed_point_model(Mamba *mamba, const char *output_file)
+{
+    Config *p = &mamba->config;
+    MambaWeights *w = &mamba->weights;
+    RunState *s = &mamba->state;
+
+    FILE *file = fopen(output_file, "wb");
+    if (!file)
+    {
+        fprintf(stderr, "Couldn't open file %s for writing\n", output_file);
+        exit(EXIT_FAILURE);
+    }
+
+    // Save fixed-point weights
+    fwrite(w->norm_fixed, sizeof(fixed_t), p->n_layers * p->dim, file);
+    fwrite(w->final_norm_fixed, sizeof(fixed_t), p->dim, file);
+    fwrite(w->in_proj_fixed, sizeof(fixed_t), p->n_layers * 2 * p->d_inner * p->dim, file);
+    fwrite(w->conv1d_weight_fixed, sizeof(fixed_t), p->n_layers * p->d_inner * p->d_conv, file);
+    fwrite(w->conv1d_bias_fixed, sizeof(fixed_t), p->n_layers * p->d_inner, file);
+    fwrite(w->x_proj_fixed, sizeof(fixed_t), p->n_layers * (p->dt_rank + 2 * p->d_state) * p->d_inner, file);
+    fwrite(w->dt_proj_weight_fixed, sizeof(fixed_t), p->n_layers * p->d_inner * p->dt_rank, file);
+    fwrite(w->A_fixed, sizeof(fixed_t), p->n_layers * p->d_inner * p->d_state, file);
+    fwrite(w->D_fixed, sizeof(fixed_t), p->n_layers * p->d_inner, file);
+    fwrite(w->out_proj_fixed, sizeof(fixed_t), p->n_layers * p->dim * p->d_inner, file);
+    fwrite(w->lm_head_fixed, sizeof(fixed_t), p->rounded_vocab_size * p->dim, file);
+    fwrite(w->dt_proj_bias_fixed, sizeof(fixed_t), p->n_layers * p->d_inner, file);
+
+    // Save fixed-point state
+    fwrite(s->input_fixed, sizeof(fixed_t), p->dim, file);
+    fwrite(s->hidden_state_fixed, sizeof(fixed_t), p->dim, file);
+    fwrite(s->xz_fixed, sizeof(fixed_t), 2 * p->d_inner, file);
+    fwrite(s->conv_state_fixed, sizeof(fixed_t), p->n_layers * p->d_inner * p->d_conv, file);
+    fwrite(s->temp_fixed, sizeof(fixed_t), p->d_inner * p->d_state, file);
+    fwrite(s->x_db_fixed, sizeof(fixed_t), p->dt_rank + 2 * p->d_state, file);
+    fwrite(s->dt_fixed, sizeof(fixed_t), p->d_inner, file);
+    fwrite(s->dA_fixed, sizeof(fixed_t), p->d_inner * p->d_state, file);
+    fwrite(s->dB_fixed, sizeof(fixed_t), p->d_inner * p->d_state, file);
+    fwrite(s->ssm_state_fixed, sizeof(fixed_t), p->n_layers * p->d_inner * p->d_state, file);
+    fwrite(s->y_fixed, sizeof(fixed_t), p->d_inner, file);
+    fwrite(s->logits_fixed, sizeof(fixed_t), p->rounded_vocab_size, file);
+
+    fclose(file);
+}
+
 void convert_to_fixed_point(Mamba *mamba)
 {
     Config *p = &mamba->config;
@@ -328,6 +372,9 @@ void convert_to_fixed_point(Mamba *mamba)
     {
         s->logits_fixed[i] = float_to_fixed(s->logits[i]);
     }
+
+    // save the fixed-point model
+    save_fixed_point_model(mamba, "model_fixed.bin");
 }
 
 void reset_internal_state(Mamba *mamba)
