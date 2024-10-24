@@ -9,6 +9,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#define LOAD_FIXED_POINT_MODEL 0
+
 // functions to calculate amount of cycles
 #define COUNT_CYCLES
 
@@ -206,8 +208,149 @@ void malloc_run_state(RunState *s, Config *p)
     }
 }
 
+int load_fixed_point_model(Mamba *mamba, const char *input_file)
+{
+    printf("Loading fixed-point model from %s\n", input_file);
+    Config *p = &mamba->config;
+    MambaWeights *w = &mamba->weights;
+    RunState *s = &mamba->state;
+
+    FILE *file = fopen(input_file, "rb");
+    if (!file)
+    {
+        fprintf(stderr, "Couldn't open file %s for reading\n", input_file);
+        return 0;
+    }
+
+    // Allocate and load fixed-point weights
+    w->token_embedding_table = malloc(sizeof(float) * p->rounded_vocab_size * p->dim);
+    if (fread(w->token_embedding_table, sizeof(float), p->rounded_vocab_size * p->dim, file) != p->rounded_vocab_size * p->dim)
+    {
+        fprintf(stderr, "Error reading token_embedding_table from file\n");
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
+
+    w->in_proj_fixed = malloc(sizeof(fixed_t) * p->n_layers * 2 * p->d_inner * p->dim);
+    if (fread(w->in_proj_fixed, sizeof(fixed_t), p->n_layers * 2 * p->d_inner * p->dim, file) != p->n_layers * 2 * p->d_inner * p->dim)
+    {
+        fprintf(stderr, "Error reading in_proj_fixed from file\n");
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
+
+    w->conv1d_weight_fixed = malloc(sizeof(fixed_t) * p->n_layers * p->d_inner * p->d_conv);
+    if (fread(w->conv1d_weight_fixed, sizeof(fixed_t), p->n_layers * p->d_inner * p->d_conv, file) != p->n_layers * p->d_inner * p->d_conv)
+    {
+        fprintf(stderr, "Error reading conv1d_weight_fixed from file\n");
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
+
+    w->conv1d_bias_fixed = malloc(sizeof(fixed_t) * p->n_layers * p->d_inner);
+    if (fread(w->conv1d_bias_fixed, sizeof(fixed_t), p->n_layers * p->d_inner, file) != p->n_layers * p->d_inner)
+    {
+        fprintf(stderr, "Error reading conv1d_bias_fixed from file\n");
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
+
+    w->x_proj_fixed = malloc(sizeof(fixed_t) * p->n_layers * (p->dt_rank + 2 * p->d_state) * p->d_inner);
+    if (fread(w->x_proj_fixed, sizeof(fixed_t), p->n_layers * (p->dt_rank + 2 * p->d_state) * p->d_inner, file) != p->n_layers * (p->dt_rank + 2 * p->d_state) * p->d_inner)
+    {
+        fprintf(stderr, "Error reading x_proj_fixed from file\n");
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
+
+    w->dt_proj_weight_fixed = malloc(sizeof(fixed_t) * p->n_layers * p->d_inner * p->dt_rank);
+    if (fread(w->dt_proj_weight_fixed, sizeof(fixed_t), p->n_layers * p->d_inner * p->dt_rank, file) != p->n_layers * p->d_inner * p->dt_rank)
+    {
+        fprintf(stderr, "Error reading dt_proj_weight_fixed from file\n");
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
+
+    w->dt_proj_bias_fixed = malloc(sizeof(fixed_t) * p->n_layers * p->d_inner);
+    if (fread(w->dt_proj_bias_fixed, sizeof(fixed_t), p->n_layers * p->d_inner, file) != p->n_layers * p->d_inner)
+    {
+        fprintf(stderr, "Error reading dt_proj_bias_fixed from file\n");
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
+
+    w->A_fixed = malloc(sizeof(fixed_t) * p->n_layers * p->d_inner * p->d_state);
+    if (fread(w->A_fixed, sizeof(fixed_t), p->n_layers * p->d_inner * p->d_state, file) != p->n_layers * p->d_inner * p->d_state)
+    {
+        fprintf(stderr, "Error reading A_fixed from file\n");
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
+
+    w->D_fixed = malloc(sizeof(fixed_t) * p->n_layers * p->d_inner);
+    if (fread(w->D_fixed, sizeof(fixed_t), p->n_layers * p->d_inner, file) != p->n_layers * p->d_inner)
+    {
+        fprintf(stderr, "Error reading D_fixed from file\n");
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
+
+    w->out_proj_fixed = malloc(sizeof(fixed_t) * p->n_layers * p->dim * p->d_inner);
+    if (fread(w->out_proj_fixed, sizeof(fixed_t), p->n_layers * p->dim * p->d_inner, file) != p->n_layers * p->dim * p->d_inner)
+    {
+        fprintf(stderr, "Error reading out_proj_fixed from file\n");
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
+
+    w->norm_fixed = malloc(sizeof(fixed_t) * p->dim);
+    if (fread(w->norm_fixed, sizeof(fixed_t), p->dim, file) != p->dim)
+    {
+        fprintf(stderr, "Error reading norm_fixed from file\n");
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
+
+    w->final_norm_fixed = malloc(sizeof(fixed_t) * p->dim);
+    if (fread(w->final_norm_fixed, sizeof(fixed_t), p->dim, file) != p->dim)
+    {
+        fprintf(stderr, "Error reading final_norm_fixed from file\n");
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
+
+    w->lm_head_fixed = malloc(sizeof(fixed_t) * p->rounded_vocab_size * p->dim);
+    if (fread(w->lm_head_fixed, sizeof(fixed_t), p->rounded_vocab_size * p->dim, file) != p->rounded_vocab_size * p->dim)
+    {
+        fprintf(stderr, "Error reading lm_head_fixed from file\n");
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
+
+    fclose(file);
+
+    // Allocate fixed-point state
+    s->input_fixed = malloc(sizeof(fixed_t) * p->dim);
+    s->hidden_state_fixed = malloc(sizeof(fixed_t) * p->dim);
+    s->xz_fixed = malloc(sizeof(fixed_t) * 2 * p->d_inner);
+    s->x_db_fixed = malloc(sizeof(fixed_t) * (p->dt_rank + 2 * p->d_state));
+    s->dt_fixed = malloc(sizeof(fixed_t) * p->d_inner);
+    s->dA_fixed = malloc(sizeof(fixed_t) * p->d_inner * p->d_state);
+    s->dB_fixed = malloc(sizeof(fixed_t) * p->d_inner * p->d_state);
+    s->temp_fixed = malloc(sizeof(fixed_t) * p->d_inner * p->d_state);
+    s->y_fixed = malloc(sizeof(fixed_t) * p->d_inner);
+    s->logits_fixed = malloc(sizeof(fixed_t) * p->rounded_vocab_size);
+    s->conv_state_fixed = malloc(sizeof(fixed_t) * p->n_layers * p->d_inner * p->d_conv);
+    s->ssm_state_fixed = malloc(sizeof(fixed_t) * p->n_layers * p->d_inner * p->d_state);
+
+    malloc_run_state(s, p);
+
+    return 1;
+}
+
 void save_fixed_point_model(Mamba *mamba, const char *output_file)
 {
+    printf("Saving fixed-point model to %s\n", output_file);
     Config *p = &mamba->config;
     MambaWeights *w = &mamba->weights;
     RunState *s = &mamba->state;
@@ -220,34 +363,24 @@ void save_fixed_point_model(Mamba *mamba, const char *output_file)
     }
 
     // Save fixed-point weights
-    fwrite(w->norm_fixed, sizeof(fixed_t), p->n_layers * p->dim, file);
-    fwrite(w->final_norm_fixed, sizeof(fixed_t), p->dim, file);
+    fwrite(w->token_embedding_table, sizeof(float), p->rounded_vocab_size * p->dim, file);
     fwrite(w->in_proj_fixed, sizeof(fixed_t), p->n_layers * 2 * p->d_inner * p->dim, file);
     fwrite(w->conv1d_weight_fixed, sizeof(fixed_t), p->n_layers * p->d_inner * p->d_conv, file);
     fwrite(w->conv1d_bias_fixed, sizeof(fixed_t), p->n_layers * p->d_inner, file);
     fwrite(w->x_proj_fixed, sizeof(fixed_t), p->n_layers * (p->dt_rank + 2 * p->d_state) * p->d_inner, file);
     fwrite(w->dt_proj_weight_fixed, sizeof(fixed_t), p->n_layers * p->d_inner * p->dt_rank, file);
+    fwrite(w->dt_proj_bias_fixed, sizeof(fixed_t), p->n_layers * p->d_inner, file);
     fwrite(w->A_fixed, sizeof(fixed_t), p->n_layers * p->d_inner * p->d_state, file);
     fwrite(w->D_fixed, sizeof(fixed_t), p->n_layers * p->d_inner, file);
     fwrite(w->out_proj_fixed, sizeof(fixed_t), p->n_layers * p->dim * p->d_inner, file);
+    fwrite(w->norm_fixed, sizeof(fixed_t), p->n_layers * p->dim, file);
+    fwrite(w->final_norm_fixed, sizeof(fixed_t), p->dim, file);
     fwrite(w->lm_head_fixed, sizeof(fixed_t), p->rounded_vocab_size * p->dim, file);
-    fwrite(w->dt_proj_bias_fixed, sizeof(fixed_t), p->n_layers * p->d_inner, file);
-
-    // Save fixed-point state
-    fwrite(s->input_fixed, sizeof(fixed_t), p->dim, file);
-    fwrite(s->hidden_state_fixed, sizeof(fixed_t), p->dim, file);
-    fwrite(s->xz_fixed, sizeof(fixed_t), 2 * p->d_inner, file);
-    fwrite(s->conv_state_fixed, sizeof(fixed_t), p->n_layers * p->d_inner * p->d_conv, file);
-    fwrite(s->temp_fixed, sizeof(fixed_t), p->d_inner * p->d_state, file);
-    fwrite(s->x_db_fixed, sizeof(fixed_t), p->dt_rank + 2 * p->d_state, file);
-    fwrite(s->dt_fixed, sizeof(fixed_t), p->d_inner, file);
-    fwrite(s->dA_fixed, sizeof(fixed_t), p->d_inner * p->d_state, file);
-    fwrite(s->dB_fixed, sizeof(fixed_t), p->d_inner * p->d_state, file);
-    fwrite(s->ssm_state_fixed, sizeof(fixed_t), p->n_layers * p->d_inner * p->d_state, file);
-    fwrite(s->y_fixed, sizeof(fixed_t), p->d_inner, file);
-    fwrite(s->logits_fixed, sizeof(fixed_t), p->rounded_vocab_size, file);
 
     fclose(file);
+
+    printf("Model saved successfully\n");
+    exit(EXIT_SUCCESS);
 }
 
 void convert_to_fixed_point(Mamba *mamba)
@@ -258,17 +391,89 @@ void convert_to_fixed_point(Mamba *mamba)
 
     // convert the weights to fixed point
     w->norm_fixed = malloc(p->n_layers * p->dim * sizeof(fixed_t));
+    if (w->norm_fixed == NULL)
+    {
+        fprintf(stderr, "Memory allocation failed for norm_fixed\n");
+        exit(EXIT_FAILURE);
+    }
+
     w->final_norm_fixed = malloc(p->dim * sizeof(fixed_t));
+    if (w->final_norm_fixed == NULL)
+    {
+        fprintf(stderr, "Memory allocation failed for final_norm_fixed\n");
+        exit(EXIT_FAILURE);
+    }
+
     w->in_proj_fixed = malloc(p->n_layers * 2 * p->d_inner * p->dim * sizeof(fixed_t));
+    if (w->in_proj_fixed == NULL)
+    {
+        fprintf(stderr, "Memory allocation failed for in_proj_fixed\n");
+        exit(EXIT_FAILURE);
+    }
+
     w->conv1d_weight_fixed = malloc(p->n_layers * p->d_inner * 1 * p->d_conv * sizeof(fixed_t));
+    if (w->conv1d_weight_fixed == NULL)
+    {
+        fprintf(stderr, "Memory allocation failed for conv1d_weight_fixed\n");
+        exit(EXIT_FAILURE);
+    }
+
     w->conv1d_bias_fixed = malloc(p->n_layers * p->d_inner * sizeof(fixed_t));
+    if (w->conv1d_bias_fixed == NULL)
+    {
+        fprintf(stderr, "Memory allocation failed for conv1d_bias_fixed\n");
+        exit(EXIT_FAILURE);
+    }
+
     w->x_proj_fixed = malloc(p->n_layers * (p->dt_rank + 2 * p->d_state) * p->d_inner * sizeof(fixed_t));
+    if (w->x_proj_fixed == NULL)
+    {
+        fprintf(stderr, "Memory allocation failed for x_proj_fixed\n");
+        exit(EXIT_FAILURE);
+    }
+
     w->dt_proj_weight_fixed = malloc(p->n_layers * p->d_inner * p->dt_rank * sizeof(fixed_t));
+    if (w->dt_proj_weight_fixed == NULL)
+    {
+        fprintf(stderr, "Memory allocation failed for dt_proj_weight_fixed\n");
+        exit(EXIT_FAILURE);
+    }
+
     w->A_fixed = malloc(p->n_layers * p->d_inner * p->d_state * sizeof(fixed_t));
+    if (w->A_fixed == NULL)
+    {
+        fprintf(stderr, "Memory allocation failed for A_fixed\n");
+        exit(EXIT_FAILURE);
+    }
+
     w->D_fixed = malloc(p->n_layers * p->d_inner * sizeof(fixed_t));
+    if (w->D_fixed == NULL)
+    {
+        fprintf(stderr, "Memory allocation failed for D_fixed\n");
+        exit(EXIT_FAILURE);
+    }
+
     w->out_proj_fixed = malloc(p->n_layers * p->dim * p->d_inner * sizeof(fixed_t));
+    if (w->out_proj_fixed == NULL)
+    {
+        fprintf(stderr, "Memory allocation failed for out_proj_fixed\n");
+        exit(EXIT_FAILURE);
+    }
+
     w->lm_head_fixed = malloc(p->rounded_vocab_size * p->dim * sizeof(fixed_t));
+    if (w->lm_head_fixed == NULL)
+    {
+        fprintf(stderr, "Memory allocation failed for lm_head_fixed\n");
+        exit(EXIT_FAILURE);
+    }
+
     w->dt_proj_bias_fixed = malloc(p->n_layers * p->d_inner * sizeof(fixed_t));
+    if (w->dt_proj_bias_fixed == NULL)
+    {
+        fprintf(stderr, "Memory allocation failed for dt_proj_bias_fixed\n");
+        exit(EXIT_FAILURE);
+    }
+
     // convert the weights to fixed point
     for (int i = 0; i < p->n_layers * p->dim; i++)
     {
@@ -467,9 +672,12 @@ void memory_map_weights(MambaWeights *w, Config *p, float *ptr)
     w->lm_head = p->shared_classifier ? w->token_embedding_table : ptr;
 }
 
-void load_model_file(char *model_path, Config *config, MambaWeights *weights,
-                     int *fd, float **data, ssize_t *file_size)
+int load_model_file(Mamba *mamba, char *model_path,
+                    int *fd, float **data, ssize_t *file_size)
 {
+    Config *config = &mamba->config;
+    MambaWeights *weights = &mamba->weights;
+
     FILE *file = fopen(model_path, "rb");
     if (!file)
     {
@@ -511,6 +719,13 @@ void load_model_file(char *model_path, Config *config, MambaWeights *weights,
     {
         config->rounded_vocab_size = config->vocab_size;
     }
+
+    if (LOAD_FIXED_POINT_MODEL && load_fixed_point_model(mamba, "model_fixed.bin"))
+    {
+        printf("Data loaded successfully\n");
+        return 0;
+    }
+
     // figure out the file size
     fseek(file, 0, SEEK_END); // move file pointer to end of file
     *file_size = ftell(file); // get the file size, in bytes
@@ -535,14 +750,23 @@ void load_model_file(char *model_path, Config *config, MambaWeights *weights,
     }
     float *weights_ptr = *data + (256 / 4);
     memory_map_weights(weights, config, weights_ptr);
+
+    return 1;
 }
 
 void load_model(Mamba *m, char *model_path)
 {
+    printf("Loading model from %s\n", model_path);
     // read the Config and the Weights from the model file
-    load_model_file(model_path, &m->config, &m->weights, &m->fd, &m->data, &m->file_size);
-    // allocate the RunState buffers
-    malloc_run_state(&m->state, &m->config);
+    if (load_model_file(m, model_path, &m->fd, &m->data, &m->file_size))
+    {
+        // allocate the RunState buffers
+        printf("Allocating RunState buffers\n");
+        malloc_run_state(&m->state, &m->config);
+
+        // convert the weights to fixed point
+        convert_to_fixed_point(m);
+    }
 }
 
 void free_model(Mamba *m)
