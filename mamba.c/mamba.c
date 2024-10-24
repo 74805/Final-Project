@@ -286,8 +286,8 @@ int load_fixed_point_model(Mamba *mamba, const char *input_file)
         exit(EXIT_FAILURE);
     }
 
-    w->norm_fixed = malloc(sizeof(fixed_t) * p->dim);
-    if (fread(w->norm_fixed, sizeof(fixed_t), p->dim, file) != p->dim)
+    w->norm_fixed = malloc(sizeof(fixed_t) * p->n_layers * p->dim);
+    if (fread(w->norm_fixed, sizeof(fixed_t), p->n_layers * p->dim, file) != p->n_layers * p->dim)
     {
         fprintf(stderr, "Error reading norm_fixed from file\n");
         fclose(file);
@@ -313,6 +313,7 @@ int load_fixed_point_model(Mamba *mamba, const char *input_file)
     fclose(file);
 
     // Allocate fixed-point state
+    malloc_run_state(s, p);
     s->input_fixed = malloc(sizeof(fixed_t) * p->dim);
     s->hidden_state_fixed = malloc(sizeof(fixed_t) * p->dim);
     s->xz_fixed = malloc(sizeof(fixed_t) * 2 * p->d_inner);
@@ -325,8 +326,6 @@ int load_fixed_point_model(Mamba *mamba, const char *input_file)
     s->logits_fixed = malloc(sizeof(fixed_t) * p->rounded_vocab_size);
     s->conv_state_fixed = malloc(sizeof(fixed_t) * p->n_layers * p->d_inner * p->d_conv);
     s->ssm_state_fixed = malloc(sizeof(fixed_t) * p->n_layers * p->d_inner * p->d_state);
-
-    malloc_run_state(s, p);
 
     return 1;
 }
