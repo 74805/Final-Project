@@ -188,24 +188,7 @@ void malloc_run_state(RunState *s, Config *p)
 {
     // memory reused by all layers
     s->input = malloc(p->dim * sizeof(float));
-    s->hidden_state = malloc(p->dim * sizeof(float));
-    s->xz = malloc(2 * p->d_inner * sizeof(float));
-    s->x_db = malloc((p->dt_rank + 2 * p->d_state) * sizeof(float));
-    s->dt = malloc(p->d_inner * sizeof(float));
-    s->dA = malloc(p->d_inner * p->d_state * sizeof(float));
-    s->dB = malloc(p->d_inner * p->d_state * sizeof(float));
-    s->temp = malloc(p->d_inner * p->d_state * sizeof(float));
-    s->y = malloc(p->d_inner * sizeof(float));
     s->logits = malloc(p->rounded_vocab_size * sizeof(float));
-    // internal state, separate memory for each layer
-    s->conv_state = calloc(p->n_layers * p->d_inner * p->d_conv, sizeof(float));
-    s->ssm_state = calloc(p->n_layers * p->d_inner * p->d_state, sizeof(float));
-    // ensure all mallocs went fine
-    if (!s->xz || !s->x_db || !s->dt || !s->dA || !s->dB || !s->temp || !s->y || !s->logits || !s->conv_state || !s->ssm_state)
-    {
-        fprintf(stderr, "malloc failed!\n");
-        exit(EXIT_FAILURE);
-    }
 }
 
 int load_fixed_point_model(Mamba *mamba, const char *input_file)
@@ -537,46 +520,6 @@ void convert_to_fixed_point(Mamba *mamba)
     s->ssm_state_fixed = malloc(p->n_layers * p->d_inner * p->d_state * sizeof(fixed_t));
     s->y_fixed = malloc(p->d_inner * sizeof(fixed_t));
     s->logits_fixed = malloc(p->rounded_vocab_size * sizeof(fixed_t));
-    // convert the state to fixed point
-    for (int i = 0; i < p->dim; i++)
-    {
-        s->input_fixed[i] = float_to_fixed(s->input[i]);
-        s->hidden_state_fixed[i] = float_to_fixed(s->hidden_state[i]);
-    }
-    for (int i = 0; i < 2 * p->d_inner; i++)
-    {
-        s->xz_fixed[i] = float_to_fixed(s->xz[i]);
-    }
-    for (int i = 0; i < p->n_layers * p->d_inner * p->d_conv; i++)
-    {
-        s->conv_state_fixed[i] = float_to_fixed(s->conv_state[i]);
-    }
-    for (int i = 0; i < p->d_inner * p->d_state; i++)
-    {
-        s->temp_fixed[i] = float_to_fixed(s->temp[i]);
-    }
-    for (int i = 0; i < p->dt_rank + 2 * p->d_state; i++)
-    {
-        s->x_db_fixed[i] = float_to_fixed(s->x_db[i]);
-    }
-    for (int i = 0; i < p->d_inner; i++)
-    {
-        s->dt_fixed[i] = float_to_fixed(s->dt[i]);
-        s->y_fixed[i] = float_to_fixed(s->y[i]);
-    }
-    for (int i = 0; i < p->d_inner * p->d_state; i++)
-    {
-        s->dA_fixed[i] = float_to_fixed(s->dA[i]);
-        s->dB_fixed[i] = float_to_fixed(s->dB[i]);
-    }
-    for (int i = 0; i < p->n_layers * p->d_inner * p->d_state; i++)
-    {
-        s->ssm_state_fixed[i] = float_to_fixed(s->ssm_state[i]);
-    }
-    for (int i = 0; i < p->rounded_vocab_size; i++)
-    {
-        s->logits_fixed[i] = float_to_fixed(s->logits[i]);
-    }
 
     // save the fixed-point model
     save_fixed_point_model(mamba, "model_fixed.bin");
