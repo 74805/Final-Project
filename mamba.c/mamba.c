@@ -1206,10 +1206,6 @@ float *forward(Mamba *mamba, int token)
 
     // convert the input to fixed point
     fixed_t *input = s->input_fixed;
-    for (int i = 0; i < dim; i++)
-    {
-        input[i] = float_to_fixed(input_float[i]);
-    }
 
     // forward all the layers
     for (unsigned long long l = 0; l < p->n_layers; l++)
