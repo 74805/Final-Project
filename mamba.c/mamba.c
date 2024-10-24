@@ -324,8 +324,8 @@ int load_fixed_point_model(Mamba *mamba, const char *input_file)
     s->temp_fixed = malloc(sizeof(fixed_t) * p->d_inner * p->d_state);
     s->y_fixed = malloc(sizeof(fixed_t) * p->d_inner);
     s->logits_fixed = malloc(sizeof(fixed_t) * p->rounded_vocab_size);
-    s->conv_state_fixed = malloc(sizeof(fixed_t) * p->n_layers * p->d_inner * p->d_conv);
-    s->ssm_state_fixed = malloc(sizeof(fixed_t) * p->n_layers * p->d_inner * p->d_state);
+    s->conv_state_fixed = calloc(p->n_layers * p->d_inner * p->d_conv, sizeof(fixed_t));
+    s->ssm_state_fixed = calloc(p->n_layers * p->d_inner * p->d_state, sizeof(fixed_t));
 
     return 1;
 }
